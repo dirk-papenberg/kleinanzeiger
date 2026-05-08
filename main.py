@@ -123,6 +123,13 @@ Erstelle ein realistisches Inserat in deutscher Sprache und antworte ausschliess
 Wenn du den Gegenstand nicht erkennst, setze title auf '?' und beschreibe in description, was du siehst. Antworte NUR mit dem JSON, keine Markdown-Codefences, kein Fliesstext drumherum."""
 
 
+EDIT_SYSTEM_PROMPT = """Du bekommst ein bestehendes Kleinanzeigen-Inserat als JSON und einen Aenderungswunsch des Nutzers in deutscher Sprache.
+
+Wende den Wunsch an und gib das **vollstaendige aktualisierte JSON** mit denselben Feldern zurueck (title, category, condition, description, price_eur, price_type, price_reasoning, missing_info). Aendere nur, was der Nutzer angefragt hat; alle anderen Felder uebernimmst du unveraendert. Wenn der Wunsch unklar oder unmoeglich ist, gib das JSON unveraendert zurueck und schreib eine kurze Erklaerung in price_reasoning.
+
+Antworte NUR mit dem JSON, keine Codefences, kein Fliesstext."""
+
+
 @dataclass
 class Draft:
     photos: list[bytes] = field(default_factory=list)
@@ -183,6 +190,52 @@ async def analyze_photos(photos: list[bytes]) -> dict:
     return json.loads(text)
 
 
+def _draft_to_json(d: Draft) -> str:
+    return json.dumps(
+        {
+            "title": d.title,
+            "category": d.category,
+            "condition": d.condition,
+            "description": d.description,
+            "price_eur": d.price_eur,
+            "price_type": d.price_type,
+            "price_reasoning": d.price_reasoning,
+            "missing_info": d.missing_info,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+async def apply_edit(d: Draft, user_request: str) -> dict:
+    """Ask Claude to apply a free-form edit request to the current draft."""
+    client = get_anthropic()
+    user_msg = (
+        f"Aktuelles Inserat:\n```json\n{_draft_to_json(d)}\n```\n\n"
+        f"Aenderungswunsch des Nutzers:\n{user_request}"
+    )
+    msg = await client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1024,
+        system=EDIT_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_msg}],
+    )
+    text = "".join(b.text for b in msg.content if b.type == "text").strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+    return json.loads(text)
+
+
+def _apply_dict_to_draft(d: Draft, data: dict) -> None:
+    d.title = str(data.get("title", d.title))[:80]
+    d.category = str(data.get("category", d.category))
+    d.condition = str(data.get("condition", d.condition))
+    d.description = str(data.get("description", d.description))
+    d.price_eur = int(data.get("price_eur", d.price_eur) or 0)
+    d.price_type = str(data.get("price_type", d.price_type))
+    d.price_reasoning = str(data.get("price_reasoning", d.price_reasoning))
+    d.missing_info = list(data.get("missing_info", d.missing_info) or [])
+
+
 def escape_md(s: str) -> str:
     return s.replace("*", "·").replace("_", " ").replace("`", "'")
 
@@ -219,12 +272,9 @@ def keyboard() -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("✅ Copy-Paste", callback_data="ok"),
-            InlineKeyboardButton("💶 Preis ändern", callback_data="price"),
-        ],
-        [
             InlineKeyboardButton("🔁 Neu generieren", callback_data="regen"),
-            InlineKeyboardButton("❌ Verwerfen", callback_data="cancel"),
         ],
+        [InlineKeyboardButton("❌ Verwerfen", callback_data="cancel")],
     ]
     if KLEINANZEIGEN_BOT_CMD:
         rows.insert(
@@ -319,9 +369,12 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Schick mir ein Foto (oder mehrere als Album) von dem Ding, das du verkaufen willst. "
         "Ich mache dir Titel, Beschreibung und Preisvorschlag für Kleinanzeigen.de.\n\n"
-        "Befehle:\n"
-        "/preis 25 — Preis manuell setzen (optional 'FP', 'VB', 'VHB')\n"
-        "/neu — aktuellen Entwurf verwerfen"
+        "Wenn dir was nicht passt, schreib es einfach in normaler Sprache, z.B.:\n"
+        "• \"Preis auf 30 erhöhen\"\n"
+        "• \"Beschreibung etwas kürzer\"\n"
+        "• \"erwähne, dass es noch in OVP ist\"\n"
+        "• \"lockerer formulieren\"\n\n"
+        "Befehl: /neu — aktuellen Entwurf verwerfen"
     )
 
 
@@ -330,24 +383,33 @@ async def cmd_neu(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Ok, Entwurf verworfen. Schick neue Fotos.")
 
 
-async def cmd_preis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Free-form edit request for the current draft."""
     chat_id = update.effective_chat.id
     d = DRAFTS.get(chat_id)
     if not d:
-        await update.message.reply_text("Kein Entwurf vorhanden. Schick erst Fotos.")
+        await update.message.reply_text(
+            "Kein Entwurf aktiv — schick mir erst ein Foto."
+        )
         return
-    if not context.args:
-        await update.message.reply_text("Nutzung: /preis 25  oder  /preis 25 FP")
+    user_request = (update.message.text or "").strip()
+    if not user_request:
         return
+
+    await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     try:
-        d.price_eur = int(re.sub(r"[^\d]", "", context.args[0]))
-    except ValueError:
-        await update.message.reply_text("Preis muss eine Zahl sein.")
+        data = await apply_edit(d, user_request)
+    except Exception as e:
+        log.exception("edit failed")
+        await context.bot.send_message(chat_id, f"Konnte den Wunsch nicht umsetzen: {e}")
         return
-    if len(context.args) > 1:
-        d.price_type = context.args[1].upper()
-    await update.message.reply_text(
-        render_draft(d), parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard()
+
+    _apply_dict_to_draft(d, data)
+    await context.bot.send_message(
+        chat_id,
+        render_draft(d),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard(),
     )
 
 
@@ -402,17 +464,12 @@ async def _process_photos(
         await context.bot.send_message(chat_id, f"Fehler bei der Analyse: {e}")
         return
 
-    d = Draft(
-        photos=photos,
-        title=str(data.get("title", "?"))[:80],
-        category=str(data.get("category", "")),
-        condition=str(data.get("condition", "")),
-        description=str(data.get("description", "")),
-        price_eur=int(data.get("price_eur", 0) or 0),
-        price_type=str(data.get("price_type", "VB")),
-        price_reasoning=str(data.get("price_reasoning", "")),
-        missing_info=list(data.get("missing_info", []) or []),
-    )
+    d = Draft(photos=photos)
+    _apply_dict_to_draft(d, data)
+    if not d.title:
+        d.title = "?"
+    if not d.price_type:
+        d.price_type = "VB"
     DRAFTS[chat_id] = d
     await context.bot.send_message(
         chat_id,
@@ -442,12 +499,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Fotos anhängen und den Block oben reinkopieren. Viel Erfolg!",
         )
         DRAFTS.pop(chat_id, None)
-    elif q.data == "price":
-        await context.bot.send_message(
-            chat_id,
-            "Schick mir den neuen Preis mit `/preis 25` (optional `FP`, `VB`, `VHB`).",
-            parse_mode=ParseMode.MARKDOWN,
-        )
     elif q.data == "regen":
         await q.edit_message_reply_markup(reply_markup=None)
         await _process_photos(chat_id, d.photos, context)
@@ -508,8 +559,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("neu", cmd_neu))
-    app.add_handler(CommandHandler("preis", cmd_preis))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_button))
     log.info("Starting bot…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
