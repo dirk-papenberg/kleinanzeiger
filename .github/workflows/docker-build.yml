@@ -16,7 +16,7 @@ jobs:
 
       - name: Build image (PR validation only)
         if: github.event_name == 'pull_request'
-        run: docker-compose build
+        run: docker compose build
 
       - name: Write .env file
         if: github.event_name != 'pull_request'
@@ -41,4 +41,4 @@ jobs:
 
       - name: Build and deploy
         if: github.event_name != 'pull_request'
-        run: docker-compose up --build -d --remove-orphans
+        run: docker compose up --build -d --remove-orphans
