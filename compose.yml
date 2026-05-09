@@ -3,11 +3,15 @@ services:
     build:
       context: .
       cache_from:
-        - kleinanzeigen-agent:latest
+        - type=local,src=/opt/buildkit-cache/kleinanzeigen-agent
+      cache_to:
+        - type=local,dest=/opt/buildkit-cache/kleinanzeigen-agent,mode=max
     container_name: kleinanzeigen-agent
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      UV_NO_CACHE: "1"
     volumes:
       # persistent work/queue dirs and config survive container restarts
       - /opt/kleinanzeigen-agent/data:/data
