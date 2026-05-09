@@ -89,20 +89,24 @@ class BackgroundWorker:
                     if success:
                         self.queue_manager.mark_completed(job.job_id)
                         log.info("[job=%s] Completed: %s", job.job_id, message)
+                        if self.on_job_completed:
+                            await self.on_job_completed(job.job_id, job.chat_id, True, message)
                     else:
                         self.queue_manager.mark_failed(job.job_id, message)
                         log.warning("[job=%s] Failed: %s", job.job_id, message)
-                    
-                    # Notify on completion (success or failure)
-                    if self.on_job_completed:
-                        await self.on_job_completed(job.job_id, job.chat_id, success, message)
-                        
+                        # Only notify on failure when the job is moved to backout (all retries exhausted)
+                        if job.job_id in self.queue_manager.backout:
+                            if self.on_job_completed:
+                                await self.on_job_completed(job.job_id, job.chat_id, False, message)
+
                 except Exception as e:
                     error_msg = f"Handler exception: {e}"
                     self.queue_manager.mark_failed(job.job_id, error_msg)
                     log.exception("[job=%s] Handler exception", job.job_id)
-                    if self.on_job_completed:
-                        await self.on_job_completed(job.job_id, job.chat_id, False, error_msg)
+                    # Only notify on failure when the job is moved to backout (all retries exhausted)
+                    if job.job_id in self.queue_manager.backout:
+                        if self.on_job_completed:
+                            await self.on_job_completed(job.job_id, job.chat_id, False, error_msg)
 
             except asyncio.CancelledError:
                 break

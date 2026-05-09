@@ -44,4 +44,4 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           COMPOSE_BAKE: "true"
-        run: docker compose up --build -d --remove-orphans
+        run: docker compose up --build -d --force-recreate --remove-orphans
