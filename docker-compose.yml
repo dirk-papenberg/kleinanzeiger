@@ -1,7 +1,9 @@
+version: '2.0'
+
 services:
   kleinanzeigen-agent:
     build: .
-    image: kleinanzeigen-agent:latest
+    container_name: kleinanzeigen-agent
     restart: unless-stopped
     env_file:
       - .env
