@@ -84,7 +84,7 @@ QUEUE_DIR = Path(
         str(Path.home() / ".kleinanzeigen-agent" / "queue"),
     )
 )
-DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "SHIPPING_AND_PICKUP").upper()
+DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "SHIPPING").upper()
 
 LUNCH_PLAN_BASE_URL = os.environ.get(
     "LUNCH_PLAN_URL",
@@ -419,7 +419,7 @@ async def fetch_lunch_plan(date: datetime.date) -> list[dict]:
     date_str = date.isoformat()
     url = f"{LUNCH_PLAN_BASE_URL}?startDate={date_str}&endDate={date_str}"
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
+        resp = await client.get(url, headers={"Accept": "application/json"})
         resp.raise_for_status()
         data = resp.json()
     # API may return a list of day-entries or a single dict
