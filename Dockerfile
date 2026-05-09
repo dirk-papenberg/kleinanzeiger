@@ -14,15 +14,22 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN useradd --create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
-# Download the kleinanzeigen-bot Linux binary from GitHub releases
-# (curl avoids Docker ADD silently decompressing the PyInstaller binary)
+# Install system dependencies, download the kleinanzeigen-bot binary,
+# and install Playwright's Chromium browser + its OS-level deps in one layer.
+# PLAYWRIGHT_BROWSERS_PATH is set to a fixed path so both root (install) and
+# appuser (runtime) resolve the same browser location.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl python3-pip \
     && curl -fsSL -o /usr/local/bin/kleinanzeigen \
        https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 \
     && chmod +x /usr/local/bin/kleinanzeigen \
-    && apt-get purge -y --auto-remove curl \
-    && rm -rf /var/lib/apt/lists/*
+    && pip install --no-cache-dir --break-system-packages playwright \
+    && playwright install chromium \
+    && playwright install-deps chromium \
+    && apt-get purge -y --auto-remove python3-pip \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
 
 # Install dependencies first for better layer caching
 COPY --chown=appuser pyproject.toml uv.lock ./
