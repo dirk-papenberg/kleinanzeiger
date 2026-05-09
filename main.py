@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.helpers import escape_markdown
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
@@ -538,9 +539,10 @@ async def cmd_backout_jobs(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None
     msg_lines = ["❌ Fehlgeschlagene Jobs:\n"]
     for job in backout_jobs:
         retry_cmd = f"/retry_{job.job_id[:8]}"
+        safe_error = escape_markdown(str(job.error), version=1)
         msg_lines.append(
             f"• Job `{job.job_id[:8]}` ({job.job_type})\n"
-            f"  Fehler: {job.error}\n"
+            f"  Fehler: {safe_error}\n"
             f"  Versuche: {job.retry_count}/{job.max_retries}\n"
             f"  Befehl: `{retry_cmd}`\n"
         )
