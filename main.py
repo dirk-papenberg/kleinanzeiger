@@ -382,6 +382,7 @@ async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
     if base_config_text:
         base_config_text = _strip_top_level_key_block(base_config_text, "login")
         base_config_text = _strip_top_level_key_block(base_config_text, "ad_files")
+        base_config_text = _strip_top_level_key_block(base_config_text, "browser")
         base_config_text = base_config_text.rstrip() + "\n"
 
     run_config.write_text(
@@ -389,7 +390,11 @@ async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
         + "login:\n"
         + f"  username: {_yaml_escape(login_user)}\n"
         + f"  password: {_yaml_escape(login_pw)}\n"
-        + 'ad_files:\n  - "ad.yaml"\n',
+        + 'ad_files:\n  - "ad.yaml"\n'
+        + "browser:\n"
+        + "  arguments:\n"
+        + "    - --no-sandbox\n"
+        + "    - --disable-dev-shm-usage\n",
         encoding="utf-8",
     )
     cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [
