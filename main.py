@@ -822,7 +822,7 @@ def main() -> None:
     app.post_init = post_init
     app.post_stop = post_stop
 
-    user_filter = filters.User(user_ids=list(ALLOWED_USER_IDS))
+    user_filter = filters.User(list(ALLOWED_USER_IDS))
 
     app.add_handler(CommandHandler("start", cmd_start, filters=user_filter))
     app.add_handler(CommandHandler("help", cmd_start, filters=user_filter))
