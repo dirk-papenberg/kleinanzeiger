@@ -27,8 +27,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 # Download the kleinanzeigen-bot Linux binary from GitHub releases
-ADD https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 /usr/local/bin/kleinanzeigen
-RUN chmod +x /usr/local/bin/kleinanzeigen
+# (curl avoids Docker ADD silently decompressing the PyInstaller binary)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL -o /usr/local/bin/kleinanzeigen \
+       https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 \
+    && chmod +x /usr/local/bin/kleinanzeigen \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
 
 USER appuser
 
