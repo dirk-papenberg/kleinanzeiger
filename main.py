@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import datetime
 import json
 import logging
 import os
@@ -14,8 +15,10 @@ import uuid
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic, AsyncAnthropicBedrock
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -82,6 +85,12 @@ QUEUE_DIR = Path(
     )
 )
 DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "SHIPPING_AND_PICKUP").upper()
+
+LUNCH_PLAN_BASE_URL = os.environ.get(
+    "LUNCH_PLAN_URL",
+    "http://ubuntu.fritz.box:880/resources/plan",
+)
+LUNCH_PLAN_TZ = ZoneInfo("Europe/Berlin")
 
 # Access control – comma-separated Telegram user IDs, e.g. "123456789,987654321"
 _allowed_raw = os.environ.get("ALLOWED_USERS", "")

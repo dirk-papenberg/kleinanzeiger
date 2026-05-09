@@ -19,13 +19,6 @@ COPY --chown=appuser pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
-# Copy application source
-COPY --chown=appuser main.py background_worker.py queue_manager.py ./
-
-# Install the project itself
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
-
 # Download the kleinanzeigen-bot Linux binary from GitHub releases
 # (curl avoids Docker ADD silently decompressing the PyInstaller binary)
 RUN apt-get update \
@@ -35,6 +28,13 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/kleinanzeigen \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy application source
+COPY --chown=appuser main.py background_worker.py queue_manager.py ./
+
+# Install the project itself
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
 USER appuser
 
