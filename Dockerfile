@@ -11,7 +11,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # Run as non-root user (fixed UID so host volume permissions can be set to match)
-RUN useradd --no-create-home --shell /bin/false --uid 1001 appuser
+RUN useradd --create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
 # Download the kleinanzeigen-bot Linux binary from GitHub releases
