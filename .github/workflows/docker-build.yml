@@ -16,20 +16,20 @@ jobs:
 
       - name: Build image (PR validation only)
         if: github.event_name == 'pull_request'
-        run: docker compose build
+        run: docker-compose build
 
       - name: Write .env file
         if: github.event_name != 'pull_request'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           KLEINANZEIGEN_USERNAME: ${{ secrets.KLEINANZEIGEN_USERNAME }}
           KLEINANZEIGEN_PASSWORD: ${{ secrets.KLEINANZEIGEN_PASSWORD }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
         run: |
           {
             echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-            echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+            echo "AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}"
             echo "KLEINANZEIGEN_USERNAME=${KLEINANZEIGEN_USERNAME}"
             echo "KLEINANZEIGEN_PASSWORD=${KLEINANZEIGEN_PASSWORD}"
             echo "ALLOWED_USERS=${ALLOWED_USERS}"
@@ -41,4 +41,4 @@ jobs:
 
       - name: Build and deploy
         if: github.event_name != 'pull_request'
-        run: docker compose up --build -d --remove-orphans
+        run: docker-compose up --build -d --remove-orphans
