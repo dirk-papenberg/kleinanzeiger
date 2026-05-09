@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Install uv (pinned for reproducibility)
+COPY --from=ghcr.io/astral-sh/uv:0.7.2 /uv /uvx /bin/
 
 # Set environment variables for uv
 ENV UV_COMPILE_BYTECODE=1 \
@@ -14,13 +14,15 @@ WORKDIR /app
 
 # Install dependencies first for better layer caching
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 # Copy application source
 COPY main.py background_worker.py queue_manager.py ./
 
 # Install the project itself
-RUN uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
 # Download the kleinanzeigen-bot Linux binary from GitHub releases
 ADD https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 /usr/local/bin/kleinanzeigen

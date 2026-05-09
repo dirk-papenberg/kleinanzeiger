@@ -1,6 +1,9 @@
 services:
   kleinanzeigen-agent:
-    build: .
+    build:
+      context: .
+      cache_from:
+        - kleinanzeigen-agent:latest
     container_name: kleinanzeigen-agent
     restart: unless-stopped
     env_file:
