@@ -10,8 +10,8 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Run as non-root user
-RUN useradd --no-create-home --shell /bin/false appuser
+# Run as non-root user (fixed UID so host volume permissions can be set to match)
+RUN useradd --no-create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
 # Install dependencies first for better layer caching
