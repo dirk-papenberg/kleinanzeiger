@@ -14,19 +14,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN useradd --create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
-# Download kleinanzeigen-bot binary and install Playwright Chromium.
-# Browsers go to /opt/playwright-browsers so appuser can access them at runtime.
-# curl and pip are removed afterwards to keep the image lean.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+# Download kleinanzeigen-bot binary and install Chromium (used directly by the bot, not via Playwright).
+ENV DISPLAY=0:0
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends curl chromium ca-certificates \
     && curl -fsSL -o /usr/local/bin/kleinanzeigen \
        https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 \
     && chmod +x /usr/local/bin/kleinanzeigen \
-    && pip install --no-cache-dir playwright \
-    && playwright install --with-deps chromium \
-    && pip uninstall -y playwright \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
