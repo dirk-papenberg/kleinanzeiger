@@ -83,6 +83,12 @@ QUEUE_DIR = Path(
 )
 DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "SHIPPING_AND_PICKUP").upper()
 
+# Access control – comma-separated Telegram user IDs, e.g. "123456789,987654321"
+_allowed_raw = os.environ.get("ALLOWED_USERS", "")
+ALLOWED_USER_IDS: set[int] = {
+    int(uid.strip()) for uid in _allowed_raw.split(",") if uid.strip().isdigit()
+}
+
 # Queue and worker (initialized in main())
 QUEUE_MANAGER: QueueManager | None = None
 BACKGROUND_WORKER: BackgroundWorker | None = None
@@ -751,6 +757,9 @@ def main() -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN not set")
+    if not ALLOWED_USER_IDS:
+        raise SystemExit("ALLOWED_USERS not set – set a comma-separated list of Telegram user IDs")
+    log.info("Access restricted to user IDs: %s", ALLOWED_USER_IDS)
     if LLM_PROVIDER == "bedrock":
         if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
             raise SystemExit("AWS_BEARER_TOKEN_BEDROCK not set (LLM_PROVIDER=bedrock)")
@@ -813,15 +822,25 @@ def main() -> None:
     app.post_init = post_init
     app.post_stop = post_stop
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
-    app.add_handler(CommandHandler("neu", cmd_neu))
-    app.add_handler(CommandHandler("queue", cmd_queue_status))
-    app.add_handler(CommandHandler("backout", cmd_backout_jobs))
-    app.add_handler(CommandHandler("retry", cmd_retry_job))
-    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    app.add_handler(CallbackQueryHandler(on_button))
+    user_filter = filters.User(user_ids=list(ALLOWED_USER_IDS))
+
+    app.add_handler(CommandHandler("start", cmd_start, filters=user_filter))
+    app.add_handler(CommandHandler("help", cmd_start, filters=user_filter))
+    app.add_handler(CommandHandler("neu", cmd_neu, filters=user_filter))
+    app.add_handler(CommandHandler("queue", cmd_queue_status, filters=user_filter))
+    app.add_handler(CommandHandler("backout", cmd_backout_jobs, filters=user_filter))
+    app.add_handler(CommandHandler("retry", cmd_retry_job, filters=user_filter))
+    app.add_handler(MessageHandler(filters.PHOTO & user_filter, on_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, on_text))
+    app.add_handler(CallbackQueryHandler(on_button, pattern=None))
+
+    # Reject all other users
+    async def _unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        log.warning("Unauthorized access attempt by user_id=%s", update.effective_user and update.effective_user.id)
+        if update.message:
+            await update.message.reply_text("⛔ Kein Zugriff.")
+
+    app.add_handler(MessageHandler(filters.ALL, _unauthorized))
     log.info("Starting bot…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

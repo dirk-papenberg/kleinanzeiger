@@ -22,6 +22,10 @@ COPY main.py background_worker.py queue_manager.py ./
 # Install the project itself
 RUN uv sync --frozen --no-dev
 
+# Copy the kleinanzeigen Linux binary and make it executable
+COPY bin/kleinanzeigen /usr/local/bin/kleinanzeigen
+RUN chmod +x /usr/local/bin/kleinanzeigen
+
 # Run as non-root user
 RUN useradd --no-create-home --shell /bin/false appuser \
     && chown -R appuser /app

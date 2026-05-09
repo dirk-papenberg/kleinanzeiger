@@ -5,3 +5,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      # persistent work/queue dirs and config survive container restarts
+      - /opt/kleinanzeigen-agent/data:/data

@@ -45,6 +45,10 @@ Create a `.env` file:
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
+# Access control: comma-separated Telegram user IDs (required)
+# To find your ID, message @userinfobot on Telegram
+ALLOWED_USERS=123456789,987654321
+
 # Optional: AWS Bedrock (instead of Anthropic)
 # LLM_PROVIDER=bedrock
 # AWS_BEARER_TOKEN_BEDROCK=your_token_here
