@@ -14,11 +14,6 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN useradd --no-create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
-# Install dependencies first for better layer caching
-COPY --chown=appuser pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
-
 # Download the kleinanzeigen-bot Linux binary from GitHub releases
 # (curl avoids Docker ADD silently decompressing the PyInstaller binary)
 RUN apt-get update \
@@ -28,6 +23,11 @@ RUN apt-get update \
     && chmod +x /usr/local/bin/kleinanzeigen \
     && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies first for better layer caching
+COPY --chown=appuser pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 # Copy application source
 COPY --chown=appuser main.py background_worker.py queue_manager.py ./
