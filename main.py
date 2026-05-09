@@ -410,6 +410,77 @@ async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
     return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace")
 
 
+# ---------------------------------------------------------------------------
+# Lunch plan
+# ---------------------------------------------------------------------------
+
+async def fetch_lunch_plan(date: datetime.date) -> list[dict]:
+    """Fetch the meal plan for *date* from the planning API."""
+    date_str = date.isoformat()
+    url = f"{LUNCH_PLAN_BASE_URL}?startDate={date_str}&endDate={date_str}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+    # API may return a list of day-entries or a single dict
+    return data if isinstance(data, list) else [data]
+
+
+def format_lunch_message(plan_entries: list[dict], date: datetime.date) -> str:
+    """Format the meal plan as a Telegram-ready Markdown message."""
+    date_label = date.strftime("%d.%m.%Y")
+    today_str = date.isoformat()
+    entry = next((e for e in plan_entries if e.get("date") == today_str), None)
+
+    if not entry or not entry.get("recipes"):
+        return f"🍽️ *Mittagessen am {date_label}*\n\nKein Mittagessen geplant."
+
+    lines = [f"🍽️ *Mittagessen am {date_label}*\n"]
+    for recipe in entry["recipes"]:
+        name = escape_md(recipe.get("name", "?"))
+        cat = recipe.get("category", "")
+        duration = recipe.get("duration", "")
+        parts = [f"*{name}*"]
+        if cat:
+            parts.append(escape_md(cat))
+        if duration:
+            parts.append(f"{duration} min")
+        lines.append("• " + " · ".join(parts))
+    return "\n".join(lines)
+
+
+async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """JobQueue callback: send today's lunch plan to all allowed users at 08:30."""
+    today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
+    log.info("Sending lunch plan for %s to %d user(s)", today, len(ALLOWED_USER_IDS))
+    try:
+        plan = await fetch_lunch_plan(today)
+    except Exception as e:
+        log.error("Failed to fetch lunch plan: %s", e)
+        return
+
+    msg = format_lunch_message(plan, today)
+    for user_id in ALLOWED_USER_IDS:
+        try:
+            await context.bot.send_message(user_id, msg, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            log.error("Failed to send lunch plan to user %d: %s", user_id, e)
+
+
+async def cmd_lunch(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show today's lunch plan on demand via /lunch."""
+    today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
+    await update.message.reply_text("🔍 Hole Mittagessen…")
+    try:
+        plan = await fetch_lunch_plan(today)
+    except Exception as e:
+        log.error("Failed to fetch lunch plan on demand: %s", e)
+        await update.message.reply_text(f"Fehler beim Abrufen des Mittagessens: {e}")
+        return
+    msg = format_lunch_message(plan, today)
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+
 async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Schick mir ein Foto (oder mehrere als Album) von dem Ding, das du verkaufen willst. "
@@ -823,6 +894,13 @@ def main() -> None:
     # Register post_init to start the background worker
     async def post_init(app: Application) -> None:
         await BACKGROUND_WORKER.start()
+        # Schedule daily lunch plan message at 08:30 Europe/Berlin
+        app.job_queue.run_daily(
+            send_lunch_plan,
+            time=datetime.time(8, 30, tzinfo=LUNCH_PLAN_TZ),
+            name="lunch_plan_daily",
+        )
+        log.info("Lunch plan job scheduled at 08:30 Europe/Berlin")
 
     # Register post_stop to stop the background worker
     async def post_stop(app: Application) -> None:
@@ -836,6 +914,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start, filters=user_filter))
     app.add_handler(CommandHandler("help", cmd_start, filters=user_filter))
     app.add_handler(CommandHandler("neu", cmd_neu, filters=user_filter))
+    app.add_handler(CommandHandler("lunch", cmd_lunch, filters=user_filter))
     app.add_handler(CommandHandler("queue", cmd_queue_status, filters=user_filter))
     app.add_handler(CommandHandler("backout", cmd_backout_jobs, filters=user_filter))
     app.add_handler(CommandHandler("retry", cmd_retry_job, filters=user_filter))
