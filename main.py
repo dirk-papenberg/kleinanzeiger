@@ -805,7 +805,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Notify user that job is queued
         await context.bot.send_message(
             chat_id,
-            f"⏳ Anzeige wird geschaltet…\n`{ad_file}`\n_Job-ID: {job_id[:8]}_",
+            f"⏳ Anzeige wird geschaltet…\n_Job-ID: {job_id[:8]}_",
             parse_mode=ParseMode.MARKDOWN,
         )
         log.info(
