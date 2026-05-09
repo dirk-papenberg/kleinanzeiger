@@ -1,0 +1,23 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build image (PR validation only)
+        if: github.event_name == 'pull_request'
+        run: docker compose build
+
+      - name: Build and deploy
+        if: github.event_name != 'pull_request'
+        run: docker compose up --build -d --remove-orphans

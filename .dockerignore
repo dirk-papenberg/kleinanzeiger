@@ -1,0 +1,18 @@
+.git/
+.venv/
+__pycache__/
+*.py[oc]
+*.egg-info/
+build/
+dist/
+
+# Secrets — never bake into image
+.env
+.env.*
+
+# Windows binary not needed in Linux container
+bin/
+
+# Dev/docs
+README.md
+.python-version

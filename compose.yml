@@ -1,0 +1,7 @@
+services:
+  kleinanzeigen-agent:
+    build: .
+    image: kleinanzeigen-agent:latest
+    restart: unless-stopped
+    env_file:
+      - .env

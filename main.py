@@ -10,37 +10,15 @@ import os
 import re
 import shlex
 import time
+import uuid
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
 from anthropic import AsyncAnthropic, AsyncAnthropicBedrock
 from dotenv import load_dotenv
-from PIL import Image, ImageOps
 
 load_dotenv()
-
-MAX_LLM_EDGE = int(os.environ.get("LLM_IMAGE_MAX_EDGE", "1568"))
-LLM_JPEG_QUALITY = int(os.environ.get("LLM_IMAGE_JPEG_QUALITY", "85"))
-
-
-def downscale_for_llm(img_bytes: bytes) -> bytes:
-    """Resize so the longest edge is <= MAX_LLM_EDGE, re-encode as JPEG.
-
-    Honors EXIF orientation, strips metadata, converts to RGB.
-    """
-    with Image.open(BytesIO(img_bytes)) as im:
-        im = ImageOps.exif_transpose(im)
-        if im.mode != "RGB":
-            im = im.convert("RGB")
-        long_edge = max(im.size)
-        if long_edge > MAX_LLM_EDGE:
-            scale = MAX_LLM_EDGE / long_edge
-            new_size = (round(im.size[0] * scale), round(im.size[1] * scale))
-            im = im.resize(new_size, Image.LANCZOS)
-        out = BytesIO()
-        im.save(out, format="JPEG", quality=LLM_JPEG_QUALITY, optimize=True)
-        return out.getvalue()
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
@@ -51,6 +29,9 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+from background_worker import BackgroundWorker
+from queue_manager import QueueManager, JobStatus
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -94,7 +75,17 @@ WORK_DIR = Path(
         str(Path.home() / ".kleinanzeigen-agent" / "ads"),
     )
 )
-DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "PICKUP").upper()
+QUEUE_DIR = Path(
+    os.environ.get(
+        "KLEINANZEIGEN_QUEUE_DIR",
+        str(Path.home() / ".kleinanzeigen-agent" / "queue"),
+    )
+)
+DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "SHIPPING_AND_PICKUP").upper()
+
+# Queue and worker (initialized in main())
+QUEUE_MANAGER: QueueManager | None = None
+BACKGROUND_WORKER: BackgroundWorker | None = None
 
 
 def _price_type_to_bot(s: str) -> str:
@@ -113,12 +104,15 @@ Erstelle ein realistisches Inserat in deutscher Sprache und antworte ausschliess
   "title": "kurz, max. 65 Zeichen, praegnant, mit Marke/Modell falls erkennbar",
   "category": "passende Kleinanzeigen-Kategorie als Vorschlag, z.B. 'Elektronik > Audio & Hifi'",
   "condition": "Neu | Sehr gut | Gut | In Ordnung | Defekt",
-  "description": "3-6 Saetze: was ist es, Zustand, Besonderheiten, Masse/Groesse falls erkennbar. Sachlich, freundlich, ohne Uebertreibung. Kein Kontaktdaten-Geblubber, kein 'Privatverkauf'-Disclaimer (das haengt der Nutzer selbst dran).",
+  "description": "3-6 Saetze: was ist es, Zustand, Besonderheiten, Masse/Groesse falls erkennbar. Sachlich, freundlich, ohne Uebertreibung. Kein Kontaktdaten-Geblubber. Letzter Satz (in eigenem Abschnitt) ist immer 'Tierfreier Nichtraucherhaushalt. Versand bei Kostenübernahme möglich.'",
   "price_eur": 25,
   "price_type": "FP | VB | VHB | zu verschenken",
   "price_reasoning": "1 Satz: warum dieser Preis (z.B. 'gebraucht ca. 40% vom Neupreis ~60 EUR')",
-  "missing_info": ["Liste der Dinge, die du fuer ein besseres Inserat noch wissen solltest, z.B. 'Groesse', 'Funktioniert noch?'"]
+  "missing_info": ["Liste der Dinge, die du fuer ein besseres Inserat noch wissen solltest, z.B. 'Groesse', 'Funktioniert noch?'"],
+  "photo_order": [0, 2, 1]
 }
+
+Das Feld photo_order enthaelt die 0-basierten Indizes aller uebergebenen Fotos in der Reihenfolge, in der sie im Inserat erscheinen sollen – das beste Uebersichtsfoto zuerst, Detail- oder Zusatzfotos danach. Bei nur einem Foto: [0].
 
 Wenn du den Gegenstand nicht erkennst, setze title auf '?' und beschreibe in description, was du siehst. Antworte NUR mit dem JSON, keine Markdown-Codefences, kein Fliesstext drumherum."""
 
@@ -145,6 +139,8 @@ class Draft:
 
 DRAFTS: dict[int, Draft] = {}
 PENDING_ALBUMS: dict[tuple[int, str], dict] = {}
+CHAT_PHOTO_POOL: dict[int, list[bytes]] = {}  # accumulated photos per chat (cleared on reset)
+ACTIVE_GENERATION_TASKS: dict[int, asyncio.Task] = {}  # in-progress generation tasks per chat
 
 
 def get_anthropic() -> AsyncAnthropic | AsyncAnthropicBedrock:
@@ -165,15 +161,15 @@ async def analyze_photos(photos: list[bytes]) -> dict:
     client = get_anthropic()
     content: list[dict] = []
     for img in photos[:8]:
-        small = await asyncio.to_thread(downscale_for_llm, img)
-        log.info("photo: %d KB -> %d KB for LLM", len(img) // 1024, len(small) // 1024)
+        llm_img = img
+        log.info("photo: %d KB -> %d KB for LLM", len(img) // 1024, len(llm_img) // 1024)
         content.append(
             {
                 "type": "image",
                 "source": {
                     "type": "base64",
                     "media_type": "image/jpeg",
-                    "data": base64.standard_b64encode(small).decode(),
+                    "data": base64.standard_b64encode(llm_img).decode(),
                 },
             }
         )
@@ -288,6 +284,34 @@ def _yaml_escape(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
+def _extract_login_from_yaml(config_text: str) -> tuple[str, str]:
+    """Extract login.username and login.password from a simple YAML config text."""
+    m = re.search(
+        r"(?ms)^\s*login\s*:\s*\n(?P<body>(?:^[ \t]+.*\n?)*)",
+        config_text,
+    )
+    if not m:
+        return "", ""
+    body = m.group("body")
+
+    def _get_value(key: str) -> str:
+        km = re.search(rf"(?m)^\s*{key}\s*:\s*(.+?)\s*$", body)
+        if not km:
+            return ""
+        v = km.group(1).strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        return v.strip()
+
+    return _get_value("username"), _get_value("password")
+
+
+def _strip_top_level_key_block(config_text: str, key: str) -> str:
+    """Remove a top-level YAML key block (best-effort, for simple YAML layouts)."""
+    pattern = rf"(?ms)^\s*{re.escape(key)}\s*:\s*\n(?:^[ \t]+.*\n?)*"
+    return re.sub(pattern, "", config_text)
+
+
 def write_ad_files(d: Draft) -> Path:
     """Persist photos + ad.yaml into a fresh working directory. Returns ad.yaml path."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -316,44 +340,50 @@ def write_ad_files(d: Draft) -> Path:
     return ad_file
 
 
-def ensure_kleinanzeigen_config() -> None:
-    """Write config.yaml from env vars if username/password are set in .env.
-
-    If the user maintains their own config.yaml manually, leave it alone:
-    we only generate when KLEINANZEIGEN_USERNAME is provided.
-    """
-    user = os.environ.get("KLEINANZEIGEN_USERNAME")
-    pw = os.environ.get("KLEINANZEIGEN_PASSWORD")
-    if not user:
-        return
-    if not pw:
-        raise RuntimeError(
-            "KLEINANZEIGEN_USERNAME is set but KLEINANZEIGEN_PASSWORD is missing"
-        )
-    cfg_path = Path(KLEINANZEIGEN_CONFIG)
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(
-        "login:\n"
-        f"  username: {_yaml_escape(user)}\n"
-        f"  password: {_yaml_escape(pw)}\n",
-        encoding="utf-8",
-    )
-    try:
-        cfg_path.chmod(0o600)
-    except OSError:
-        pass
-
-
 async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
     """Run kleinanzeigen-bot publish on the given ad. Returns (rc, combined_output)."""
-    ensure_kleinanzeigen_config()
+    ad_dir = ad_file.parent
+    run_config = ad_dir / "_run_config.yaml"
+
+    cfg_text = ""
+    cfg_user = ""
+    cfg_pw = ""
+    cfg_path = Path(KLEINANZEIGEN_CONFIG)
+    if cfg_path.exists():
+        cfg_text = cfg_path.read_text(encoding="utf-8")
+        cfg_user, cfg_pw = _extract_login_from_yaml(cfg_text)
+
+    env_user = os.environ.get("KLEINANZEIGEN_USERNAME", "").strip()
+    env_pw = os.environ.get("KLEINANZEIGEN_PASSWORD", "").strip()
+    login_user = env_user or cfg_user
+    login_pw = env_pw or cfg_pw
+    if not login_user or not login_pw:
+        raise RuntimeError(
+            "Kleinanzeigen-Login unvollstaendig: username und password erforderlich "
+            "(in KLEINANZEIGEN_CONFIG oder per KLEINANZEIGEN_USERNAME/KLEINANZEIGEN_PASSWORD)."
+        )
+
+    base_config_text = cfg_text
+    if base_config_text:
+        base_config_text = _strip_top_level_key_block(base_config_text, "login")
+        base_config_text = _strip_top_level_key_block(base_config_text, "ad_files")
+        base_config_text = base_config_text.rstrip() + "\n"
+
+    run_config.write_text(
+        base_config_text
+        + "login:\n"
+        + f"  username: {_yaml_escape(login_user)}\n"
+        + f"  password: {_yaml_escape(login_pw)}\n"
+        + 'ad_files:\n  - "ad.yaml"\n',
+        encoding="utf-8",
+    )
     cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [
+        "--workspace-mode=xdg",
         "--config",
-        KLEINANZEIGEN_CONFIG,
+        str(run_config),
         "publish",
         "--ads",
-        str(ad_file),
-        "--force",
+        "new",
     ]
     log.info("Running: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
@@ -379,24 +409,99 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_neu(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    DRAFTS.pop(update.effective_chat.id, None)
+    chat_id = update.effective_chat.id
+    had_draft = chat_id in DRAFTS
+    DRAFTS.pop(chat_id, None)
+    CHAT_PHOTO_POOL.pop(chat_id, None)
+    _task = ACTIVE_GENERATION_TASKS.pop(chat_id, None)
+    if _task and not _task.done():
+        _task.cancel()
+    log.info("[chat=%d] /neu — draft discarded=%s", chat_id, had_draft)
     await update.message.reply_text("Ok, Entwurf verworfen. Schick neue Fotos.")
+
+
+async def cmd_queue_status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show current queue status."""
+    pending_count = QUEUE_MANAGER.get_pending_count()
+    backout_count = QUEUE_MANAGER.get_backout_count()
+    
+    await update.message.reply_text(
+        f"📊 Queue-Status:\n"
+        f"⏳ Ausstehend: {pending_count}\n"
+        f"❌ Warteschlange (fehlgeschlagen): {backout_count}\n\n"
+        f"Nutze /backout um fehlgeschlagene Jobs zu sehen."
+    )
+
+
+async def cmd_backout_jobs(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show backout jobs for this chat."""
+    chat_id = update.effective_chat.id
+    backout_jobs = QUEUE_MANAGER.get_backout_jobs(chat_id=chat_id)
+    
+    if not backout_jobs:
+        await update.message.reply_text("Keine fehlgeschlagenen Jobs für diesen Chat.")
+        return
+    
+    msg_lines = ["❌ Fehlgeschlagene Jobs:\n"]
+    for job in backout_jobs:
+        retry_cmd = f"/retry_{job.job_id[:8]}"
+        msg_lines.append(
+            f"• Job `{job.job_id[:8]}` ({job.job_type})\n"
+            f"  Fehler: {job.error}\n"
+            f"  Versuche: {job.retry_count}/{job.max_retries}\n"
+            f"  Befehl: `{retry_cmd}`\n"
+        )
+    
+    await update.message.reply_text(
+        "".join(msg_lines),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_retry_job(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """Retry a specific backout job. Usage: /retry_<job_id_prefix>"""
+    cmd_text = (update.message.text or "").strip()
+    match = re.match(r"/retry_(\S+)", cmd_text)
+    if not match:
+        await update.message.reply_text("Befehl: /retry_<job_id>")
+        return
+    
+    job_id_prefix = match.group(1)
+    chat_id = update.effective_chat.id
+    backout_jobs = QUEUE_MANAGER.get_backout_jobs(chat_id=chat_id)
+    
+    # Find matching job
+    matching = [j for j in backout_jobs if j.job_id.startswith(job_id_prefix)]
+    if not matching:
+        await update.message.reply_text(f"Kein Job mit ID `{job_id_prefix}` gefunden.")
+        return
+    
+    job = matching[0]
+    if QUEUE_MANAGER.retry_backout_job(job.job_id):
+        await update.message.reply_text(
+            f"✅ Job `{job.job_id[:8]}` zur Wiederholung eingeplant."
+        )
+    else:
+        await update.message.reply_text("Konnte Job nicht zur Wiederholung hinzufügen.")
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Free-form edit request for the current draft."""
     chat_id = update.effective_chat.id
+    user_request = (update.message.text or "").strip()
+    log.info("[chat=%d] text message: %r", chat_id, user_request[:200])
     d = DRAFTS.get(chat_id)
     if not d:
+        log.info("[chat=%d] no active draft, ignoring text", chat_id)
         await update.message.reply_text(
             "Kein Entwurf aktiv — schick mir erst ein Foto."
         )
         return
-    user_request = (update.message.text or "").strip()
     if not user_request:
         return
 
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    log.info("[chat=%d] applying edit: %r", chat_id, user_request[:200])
     try:
         data = await apply_edit(d, user_request)
     except Exception as e:
@@ -418,6 +523,11 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
 
     photo = msg.photo[-1]
+    log.info(
+        "[chat=%d] photo received (file_id=%s, %dx%d, album=%s)",
+        chat_id, photo.file_id, photo.width, photo.height,
+        msg.media_group_id or "none",
+    )
     file = await context.bot.get_file(photo.file_id)
     buf = BytesIO()
     await file.download_to_memory(buf)
@@ -437,7 +547,40 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await _process_photos(chat_id, [img_bytes], context)
+    # Cancel any in-progress generation for this chat
+    existing = ACTIVE_GENERATION_TASKS.get(chat_id)
+    if existing and not existing.done():
+        existing.cancel()
+
+    # Accumulate photo: seed pool from existing draft if this is a fresh pool
+    is_addition = chat_id in CHAT_PHOTO_POOL or chat_id in DRAFTS
+    if chat_id not in CHAT_PHOTO_POOL:
+        d = DRAFTS.get(chat_id)
+        CHAT_PHOTO_POOL[chat_id] = list(d.photos) if d else []
+    CHAT_PHOTO_POOL[chat_id].append(img_bytes)
+
+    # Immediate feedback — differentiate first photo from additions
+    total = len(CHAT_PHOTO_POOL[chat_id])
+    if is_addition:
+        await context.bot.send_message(
+            chat_id,
+            f"📸 Noch ein Foto – generiere das Inserat neu mit {total} Bildern…",
+        )
+    else:
+        await context.bot.send_message(
+            chat_id,
+            "📸 Foto erhalten, einen Moment…",
+        )
+
+    # Schedule new generation with all accumulated photos
+    photos_snapshot = list(CHAT_PHOTO_POOL[chat_id])
+    task = asyncio.create_task(_process_photos(chat_id, photos_snapshot, context))
+    ACTIVE_GENERATION_TASKS[chat_id] = task
+
+    def _on_task_done(t: asyncio.Task) -> None:
+        if ACTIVE_GENERATION_TASKS.get(chat_id) is t:
+            ACTIVE_GENERATION_TASKS.pop(chat_id, None)
+    task.add_done_callback(_on_task_done)
 
 
 async def _process_album_after_delay(
@@ -450,12 +593,14 @@ async def _process_album_after_delay(
     entry = PENDING_ALBUMS.pop(key, None)
     if not entry:
         return
+    await context.bot.send_message(key[0], "🤖 Analysiere Album…")
     await _process_photos(key[0], entry["photos"], context)
 
 
 async def _process_photos(
     chat_id: int, photos: list[bytes], context: ContextTypes.DEFAULT_TYPE
 ) -> None:
+    log.info("[chat=%d] processing %d photo(s) with LLM", chat_id, len(photos))
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     try:
         data = await analyze_photos(photos)
@@ -466,11 +611,25 @@ async def _process_photos(
 
     d = Draft(photos=photos)
     _apply_dict_to_draft(d, data)
+
+    # Reorder photos as Claude suggested (best overview first)
+    order = data.get("photo_order")
+    if order and isinstance(order, list) and len(order) == len(photos):
+        try:
+            reordered = [photos[int(i)] for i in order if 0 <= int(i) < len(photos)]
+            if len(reordered) == len(photos):
+                d.photos = reordered
+        except (TypeError, ValueError, IndexError):
+            pass  # keep original order on any error
     if not d.title:
         d.title = "?"
     if not d.price_type:
         d.price_type = "VB"
     DRAFTS[chat_id] = d
+    log.info(
+        "[chat=%d] draft created: title=%r price=%s %s",
+        chat_id, d.title, d.price_eur, d.price_type,
+    )
     await context.bot.send_message(
         chat_id,
         render_draft(d),
@@ -479,10 +638,34 @@ async def _process_photos(
     )
 
 
+async def handle_publish_job(job_data: dict) -> tuple[bool, str]:
+    """
+    Handler for publish_ad jobs in the background worker.
+    
+    Returns (success, message).
+    """
+    ad_file = Path(job_data["ad_file"])
+    chat_id = job_data["chat_id"]
+
+    try:
+        rc, output = await run_kleinanzeigen_bot(ad_file)
+    except Exception as e:
+        log.exception("[chat=%d] publish handler failed", chat_id)
+        return False, f"Exception: {e}"
+
+    if rc == 0:
+        log.info("[chat=%d] kleinanzeigen-bot succeeded:\n%s", chat_id, output)
+        return True, "✅ Anzeige geschaltet!"
+    else:
+        log.error("[chat=%d] kleinanzeigen-bot failed (rc=%d):\n%s", chat_id, rc, output)
+        return False, f"Kleinanzeigen-Bot Fehler (rc={rc})"
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
     chat_id = update.effective_chat.id
+    log.info("[chat=%d] button pressed: %r", chat_id, q.data)
     d = DRAFTS.get(chat_id)
     if not d:
         await q.edit_message_text("Kein Entwurf mehr aktiv.")
@@ -499,6 +682,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Fotos anhängen und den Block oben reinkopieren. Viel Erfolg!",
         )
         DRAFTS.pop(chat_id, None)
+        CHAT_PHOTO_POOL.pop(chat_id, None)
     elif q.data == "regen":
         await q.edit_message_reply_markup(reply_markup=None)
         await _process_photos(chat_id, d.photos, context)
@@ -511,39 +695,59 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         await q.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        
+        # Write ad files
         try:
             ad_file = write_ad_files(d)
-            await context.bot.send_message(
-                chat_id, f"Schalte Anzeige…\n`{ad_file}`", parse_mode=ParseMode.MARKDOWN
-            )
-            rc, output = await run_kleinanzeigen_bot(ad_file)
         except Exception as e:
-            log.exception("publish failed")
-            await context.bot.send_message(chat_id, f"Fehler beim Schalten: {e}")
+            log.exception("Failed to write ad files")
+            await context.bot.send_message(chat_id, f"Fehler beim Speichern: {e}")
             return
 
-        tail = output[-3500:] if output else "(keine Ausgabe)"
-        if rc == 0:
-            await context.bot.send_message(
-                chat_id,
-                f"✅ Anzeige geschaltet.\n\n```\n{tail}\n```",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            DRAFTS.pop(chat_id, None)
-        else:
-            await context.bot.send_message(
-                chat_id,
-                f"❌ Schalten fehlgeschlagen (rc={rc}).\n\n```\n{tail}\n```\n\n"
-                f"Tipp: einmal manuell auf kleinanzeigen.de einloggen, oder /preis "
-                f"prüfen. Du kannst weiterhin ✅ Copy-Paste nutzen.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+        # Queue the publish job
+        job_id = str(uuid.uuid4())
+        QUEUE_MANAGER.enqueue(
+            job_id=job_id,
+            chat_id=chat_id,
+            job_type="publish_ad",
+            data={
+                "ad_file": str(ad_file),
+                "chat_id": chat_id,
+            },
+        )
+
+        # Notify user that job is queued
+        await context.bot.send_message(
+            chat_id,
+            f"⏳ Anzeige wird geschaltet…\n`{ad_file}`\n_Job-ID: {job_id[:8]}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        log.info(
+            "[chat=%d job=%s] Publish job queued",
+            chat_id, job_id,
+        )
+        
+        # Clear draft and photo pool so user can start fresh
+        DRAFTS.pop(chat_id, None)
+        CHAT_PHOTO_POOL.pop(chat_id, None)
+        await context.bot.send_message(
+            chat_id,
+            "Du kannst jetzt das nächste Inserat vorbereiten. "
+            "Ich informiere dich, wenn das Schalten abgeschlossen ist.",
+        )
+
     elif q.data == "cancel":
         DRAFTS.pop(chat_id, None)
+        CHAT_PHOTO_POOL.pop(chat_id, None)
+        _task = ACTIVE_GENERATION_TASKS.pop(chat_id, None)
+        if _task and not _task.done():
+            _task.cancel()
         await q.edit_message_text("Verworfen.")
 
 
 def main() -> None:
+    global QUEUE_MANAGER, BACKGROUND_WORKER
+    
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN not set")
@@ -555,10 +759,66 @@ def main() -> None:
             raise SystemExit("ANTHROPIC_API_KEY not set")
     log.info("LLM provider=%s model=%s", LLM_PROVIDER, CLAUDE_MODEL)
 
+    # Initialize queue manager and background worker
+    QUEUE_MANAGER = QueueManager(QUEUE_DIR)
+    log.info("Queue manager initialized at %s", QUEUE_DIR)
+
+    # Job handlers
+    job_handlers = {
+        "publish_ad": handle_publish_job,
+    }
+    
+    # Job completion callback (will be set after app is created)
+    job_completion_callback = None
+
     app = Application.builder().token(token).build()
+    
+    # Create job completion callback that uses app.bot
+    async def notify_job_completion(
+        job_id: str, chat_id: int, success: bool, message: str
+    ) -> None:
+        """Notify user about job completion."""
+        if success:
+            notification = f"✅ {message}"
+        else:
+            notification = f"❌ Fehler: {message}"
+        
+        try:
+            await app.bot.send_message(
+                chat_id,
+                notification,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            log.error(
+                "[job=%s chat=%d] Failed to send completion notification: %s",
+                job_id, chat_id, e,
+            )
+
+    # Re-create worker with callback
+    BACKGROUND_WORKER = BackgroundWorker(
+        QUEUE_MANAGER,
+        job_handlers,
+        on_job_completed=notify_job_completion,
+    )
+    
+    # Register post_init to start the background worker
+    async def post_init(app: Application) -> None:
+        await BACKGROUND_WORKER.start()
+
+    # Register post_stop to stop the background worker
+    async def post_stop(app: Application) -> None:
+        await BACKGROUND_WORKER.stop()
+
+    app.post_init = post_init
+    app.post_stop = post_stop
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("neu", cmd_neu))
+    app.add_handler(CommandHandler("queue", cmd_queue_status))
+    app.add_handler(CommandHandler("backout", cmd_backout_jobs))
+    app.add_handler(CommandHandler("retry", cmd_retry_job))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(on_button))
