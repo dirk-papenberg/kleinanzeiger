@@ -15,8 +15,6 @@ RUN useradd --create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
 # Download kleinanzeigen-bot binary and install Chromium (used directly by the bot, not via Playwright).
-ENV DISPLAY=0:0
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl chromium ca-certificates \
     && curl -fsSL -o /usr/local/bin/kleinanzeigen \

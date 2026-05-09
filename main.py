@@ -394,7 +394,9 @@ async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
         + "browser:\n"
         + "  arguments:\n"
         + "    - --no-sandbox\n"
-        + "    - --disable-dev-shm-usage\n",
+        + "    - --disable-dev-shm-usage\n"
+        + "    - --disable-gpu\n"
+        + "    - --ozone-platform=headless\n",
         encoding="utf-8",
     )
     cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [

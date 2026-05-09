@@ -13,6 +13,8 @@ services:
     environment:
       UV_NO_CACHE: "1"
     shm_size: '256m'
+    security_opt:
+      - seccomp:unconfined
     volumes:
       # persistent work/queue dirs and config survive container restarts
       - /opt/kleinanzeigen-agent/data:/data
