@@ -14,24 +14,23 @@ ENV UV_COMPILE_BYTECODE=1 \
 RUN useradd --create-home --shell /bin/false --uid 1001 appuser
 WORKDIR /app
 
-# Install system dependencies, download the kleinanzeigen-bot binary,
-# and install Playwright's Chromium browser + its OS-level deps in one layer.
-# PLAYWRIGHT_BROWSERS_PATH is set to a fixed path so both root (install) and
-# appuser (runtime) resolve the same browser location.
+# Download kleinanzeigen-bot binary and install Playwright Chromium.
+# Browsers go to /opt/playwright-browsers so appuser can access them at runtime.
+# curl and pip are removed afterwards to keep the image lean.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl python3-pip \
+    && apt-get install -y --no-install-recommends curl \
     && curl -fsSL -o /usr/local/bin/kleinanzeigen \
        https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 \
     && chmod +x /usr/local/bin/kleinanzeigen \
-    && pip install --no-cache-dir --break-system-packages playwright \
-    && playwright install chromium \
-    && playwright install-deps chromium \
-    && apt-get purge -y --auto-remove python3-pip \
-    && rm -rf /var/lib/apt/lists/* /root/.cache
+    && pip install --no-cache-dir playwright \
+    && playwright install --with-deps chromium \
+    && pip uninstall -y playwright \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first for better layer caching
+# Install Python dependencies
 COPY --chown=appuser pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
