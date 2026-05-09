@@ -11,7 +11,7 @@ dist/
 .env.*
 
 # Windows binary not needed in Linux container
-bin/*.exe
+bin/
 
 # Dev/docs
 README.md

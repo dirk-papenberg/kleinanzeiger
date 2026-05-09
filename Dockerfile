@@ -22,8 +22,8 @@ COPY main.py background_worker.py queue_manager.py ./
 # Install the project itself
 RUN uv sync --frozen --no-dev
 
-# Copy the kleinanzeigen Linux binary and make it executable
-COPY bin/kleinanzeigen /usr/local/bin/kleinanzeigen
+# Download the kleinanzeigen-bot Linux binary from GitHub releases
+ADD https://github.com/Second-Hand-Friends/kleinanzeigen-bot/releases/download/latest/kleinanzeigen-bot-linux-amd64 /usr/local/bin/kleinanzeigen
 RUN chmod +x /usr/local/bin/kleinanzeigen
 
 # Run as non-root user
