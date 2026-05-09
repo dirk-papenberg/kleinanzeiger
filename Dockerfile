@@ -32,10 +32,6 @@ RUN apt-get update \
 # Copy application source
 COPY --chown=appuser main.py background_worker.py queue_manager.py ./
 
-# Install the project itself
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
-
 USER appuser
 
-CMD ["uv", "run", "python", "main.py"]
+CMD ["/app/.venv/bin/python", "main.py"]
