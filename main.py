@@ -137,6 +137,8 @@ EDIT_SYSTEM_PROMPT = """Du bekommst ein bestehendes Kleinanzeigen-Inserat als JS
 
 Wende den Wunsch an und gib das **vollstaendige aktualisierte JSON** mit denselben Feldern zurueck (title, category, condition, description, price_eur, price_type, price_reasoning, missing_info). Aendere nur, was der Nutzer angefragt hat; alle anderen Felder uebernimmst du unveraendert. Wenn der Wunsch unklar oder unmoeglich ist, gib das JSON unveraendert zurueck und schreib eine kurze Erklaerung in price_reasoning.
 
+Wichtig: Der Titel darf maximal 65 Zeichen lang sein.
+
 Antworte NUR mit dem JSON, keine Codefences, kein Fliesstext."""
 
 
@@ -238,7 +240,7 @@ async def apply_edit(d: Draft, user_request: str) -> dict:
 
 
 def _apply_dict_to_draft(d: Draft, data: dict) -> None:
-    d.title = str(data.get("title", d.title))[:80]
+    d.title = str(data.get("title", d.title))[:65]
     d.category = str(data.get("category", d.category))
     d.condition = str(data.get("condition", d.condition))
     d.description = str(data.get("description", d.description))
