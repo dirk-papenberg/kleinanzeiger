@@ -81,6 +81,7 @@ def _ensure_lunch_planning_skill_memory() -> Path:
 
 def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep temporary files hidden so the external skill directory stays tidy.
     tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp_path.write_text(content, encoding="utf-8")
@@ -91,7 +92,9 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def _normalize_rule_text(text: str) -> str:
-    normalized = text.strip().lstrip("-* ")
+    normalized = text.strip()
+    if normalized.startswith(("-", "*")):
+        normalized = normalized[1:].lstrip()
     return " ".join(normalized.split()).casefold()
 
 
