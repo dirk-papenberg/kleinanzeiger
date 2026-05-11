@@ -31,6 +31,7 @@ RECIPES_URL = os.environ.get(
     "http://ubuntu.fritz.box:880/resources/recipes",
 )
 DEFAULT_LUNCH_PLANNING_SKILL_MEMORY_PATH = "/data/skills/lunch-planning.md"
+_NO_ADDITIONAL_LUNCH_RULES = "Noch keine zusätzlichen Regeln."
 
 _DEFAULT_LUNCH_PLANNING_SKILL_CONTENT = """# Anpassbare Mittagessen-Regeln
 
@@ -57,8 +58,8 @@ _DEFAULT_LUNCH_PLANNING_SKILL_CONTENT = """# Anpassbare Mittagessen-Regeln
 - Gib nach dem Speichern eine Zusammenfassung aus.
 
 ## Nutzerregeln
-- Noch keine zusätzlichen Regeln.
-"""
+- {NO_ADDITIONAL_LUNCH_RULES}
+""".replace("{NO_ADDITIONAL_LUNCH_RULES}", _NO_ADDITIONAL_LUNCH_RULES)
 
 
 def _lunch_planning_skill_memory_path() -> Path:
@@ -90,9 +91,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def _normalize_rule_text(text: str) -> str:
-    normalized = text.strip()
-    while normalized.startswith(("-", "*")):
-        normalized = normalized[1:].strip()
+    normalized = text.strip().lstrip("-* ").strip()
     return " ".join(normalized.split()).casefold()
 
 
@@ -174,7 +173,7 @@ def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
         before, after = current.split(marker, 1)
         after_content = after.strip()
         if _normalize_rule_text(after_content) == _normalize_rule_text(
-            "Noch keine zusätzlichen Regeln."
+            _NO_ADDITIONAL_LUNCH_RULES
         ):
             updated_after = bullet
         else:

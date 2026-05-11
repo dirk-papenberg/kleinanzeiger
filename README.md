@@ -196,7 +196,8 @@ To enable the "🚀 Direkt schalten" button:
 - **Ads**: `~/.kleinanzeigen-agent/ads/` (photos + ad.yaml files)
 - **Queue**: `~/.kleinanzeigen-agent/queue/` (job persistence)
 - **Sessions**: `~/.kleinanzeigen-agent/sessions/` (per-chat conversation history; with provided Docker Compose setup this stays inside the container and is reset when the container is recreated)
-- **Lunch planning skill memory**: `/data/skills/lunch-planning.md` by default. The agent reads this external file before meal-planning tasks and can update it when you state durable rules, e.g. weekday meals should avoid time-consuming recipes.
+- **Lunch planning skill memory**: `/data/skills/lunch-planning.md` by default.
+  The agent reads this external file before meal-planning tasks and can update it when you state durable rules.
 
 ## Architecture
 
