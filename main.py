@@ -22,9 +22,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.helpers import escape_markdown
 from telegram.constants import ChatAction, ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -47,6 +48,9 @@ log = logging.getLogger("kleinanzeigen-agent")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 ALBUM_DEBOUNCE_SECONDS = 1.5
+STREAM_EDIT_INTERVAL_SECONDS = 0.8
+STREAM_EDIT_MIN_CHARS = 80
+TELEGRAM_MESSAGE_LIMIT = 4096
 
 KLEINANZEIGEN_BOT_CMD = os.environ.get("KLEINANZEIGEN_BOT_CMD", "")
 KLEINANZEIGEN_CONFIG = os.environ.get(
@@ -332,19 +336,11 @@ async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
 # Agent bridge
 # ---------------------------------------------------------------------------
 
-async def _call_agent(
+def _build_agent_input(
     chat_id: int,
     message: str,
     photos: list[bytes] | None = None,
-) -> str:
-    """Invoke the Strands agent for *chat_id* and return the text response.
-
-    The agent is called via asyncio.to_thread so the synchronous Strands call
-    does not block the Telegram event loop. All tool functions in tools.py are
-    intentionally synchronous for this reason.
-    """
-    agent = get_agent(chat_id)
-
+) -> str | list:
     if photos:
         content: list[dict] = []
         for img in photos[:8]:
@@ -361,9 +357,110 @@ async def _call_agent(
         user_input: str | list = content
     else:
         user_input = message
+    return user_input
+
+
+async def _call_agent(
+    chat_id: int,
+    message: str,
+    photos: list[bytes] | None = None,
+) -> str:
+    """Invoke the Strands agent for *chat_id* and return the text response.
+
+    The agent is called via asyncio.to_thread so the synchronous Strands call
+    does not block the Telegram event loop. All tool functions in tools.py are
+    intentionally synchronous for this reason.
+    """
+    agent = get_agent(chat_id)
+    user_input = _build_agent_input(chat_id, message, photos)
 
     result = await asyncio.to_thread(agent, user_input)
     return str(result)
+
+
+def _fit_telegram_message(text: str) -> str:
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return text
+    suffix = "\n\n…"
+    return text[: TELEGRAM_MESSAGE_LIMIT - len(suffix)] + suffix
+
+
+async def _edit_stream_message(
+    message: Message,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    try:
+        await message.edit_text(
+            _fit_telegram_message(text),
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+    except BadRequest as e:
+        if "Message is not modified" in str(e):
+            return
+        if parse_mode is not None:
+            await message.edit_text(
+                _fit_telegram_message(text),
+                reply_markup=reply_markup,
+            )
+            return
+        raise
+
+
+async def _call_agent_streaming(
+    chat_id: int,
+    message: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    final_parse_mode: ParseMode | None = ParseMode.MARKDOWN,
+) -> str:
+    """Stream a text-only Strands response into Telegram by editing one message."""
+    agent = get_agent(chat_id)
+    stream_message = await context.bot.send_message(chat_id, "🤖 Denke nach…")
+    if not hasattr(agent, "stream_async"):
+        response = await _call_agent(chat_id, message)
+        await _edit_stream_message(
+            stream_message,
+            response or "✓",
+            parse_mode=final_parse_mode,
+            reply_markup=reply_markup,
+        )
+        return response
+
+    chunks: list[str] = []
+    final_text = ""
+    last_edit_at = 0.0
+    last_edit_len = 0
+
+    async for event in agent.stream_async(_build_agent_input(chat_id, message)):
+        if "data" in event:
+            chunks.append(str(event["data"]))
+            current_text = "".join(chunks)
+            if not current_text:
+                continue
+            now = time.monotonic()
+            if (
+                now - last_edit_at >= STREAM_EDIT_INTERVAL_SECONDS
+                or len(current_text) - last_edit_len >= STREAM_EDIT_MIN_CHARS
+            ):
+                await _edit_stream_message(stream_message, current_text)
+                last_edit_at = now
+                last_edit_len = len(current_text)
+        elif "result" in event:
+            final_text = str(event["result"]).strip()
+
+    response = final_text or "".join(chunks).strip()
+    await _edit_stream_message(
+        stream_message,
+        response or "✓",
+        parse_mode=final_parse_mode,
+        reply_markup=reply_markup,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -430,12 +527,10 @@ async def _trigger_week_plan(
         "Zeige den Vorschlag als übersichtliche Liste (Datum + Gericht)."
     )
     try:
-        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
-        response = await _call_agent(user_id, trigger)
-        await context.bot.send_message(
+        await _call_agent_streaming(
             user_id,
-            response,
-            parse_mode=ParseMode.MARKDOWN,
+            trigger,
+            context,
             reply_markup=plan_keyboard(),
         )
         PENDING_LUNCH_PLAN.add(user_id)
@@ -608,14 +703,23 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     try:
-        response = await _call_agent(chat_id, user_request)
+        d = DRAFTS.get(chat_id)
+        if d:
+            response = await _call_agent(chat_id, user_request)
+        else:
+            markup = plan_keyboard() if chat_id in PENDING_LUNCH_PLAN else None
+            response = await _call_agent_streaming(
+                chat_id,
+                user_request,
+                context,
+                reply_markup=markup,
+            )
     except Exception as e:
         log.exception("[chat=%d] agent call failed", chat_id)
         await context.bot.send_message(chat_id, f"Fehler: {e}")
         return
 
     # If there is an active draft and the response is JSON, update it
-    d = DRAFTS.get(chat_id)
     if d:
         parsed = _parse_json_from_response(response)
         if parsed and "title" in parsed:
@@ -628,12 +732,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-    # For lunch plan conversations, re-attach the confirmation keyboard so
-    # the user can accept or keep modifying after back-and-forth edits.
-    markup = plan_keyboard() if chat_id in PENDING_LUNCH_PLAN else None
-    await context.bot.send_message(
-        chat_id, response, parse_mode=ParseMode.MARKDOWN, reply_markup=markup
-    )
+        await context.bot.send_message(
+            chat_id, response, parse_mode=ParseMode.MARKDOWN
+        )
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -799,9 +900,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
         try:
-            response = await _call_agent(chat_id, "Bitte speichere den Plan jetzt.")
-            await context.bot.send_message(
-                chat_id, response, parse_mode=ParseMode.MARKDOWN
+            await _call_agent_streaming(
+                chat_id,
+                "Bitte speichere den Plan jetzt.",
+                context,
             )
         except Exception as e:
             log.exception("[chat=%d] plan save failed", chat_id)
