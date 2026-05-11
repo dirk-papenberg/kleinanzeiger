@@ -421,7 +421,8 @@ async def _call_agent_streaming(
     """Stream a text-only Strands response into Telegram by editing one message."""
     agent = get_agent(chat_id)
     stream_message = await context.bot.send_message(chat_id, "🤖 Moment, bitte…")
-    if not hasattr(agent, "stream_async"):
+    stream_async = getattr(agent, "stream_async", None)
+    if not callable(stream_async):
         response = await _call_agent(chat_id, message)
         await _edit_stream_message(
             stream_message,
@@ -437,24 +438,28 @@ async def _call_agent_streaming(
     last_edit_at = 0.0
     last_edit_len = 0
 
-    async for event in agent.stream_async(_build_agent_input(chat_id, message)):
-        if "data" in event:
-            chunk = str(event["data"])
-            chunks.append(chunk)
-            current_len += len(chunk)
-            current_text = "".join(chunks)
-            if not current_text:
-                continue
-            now = time.monotonic()
-            if (
-                now - last_edit_at >= STREAM_EDIT_INTERVAL_SECONDS
-                or current_len - last_edit_len >= STREAM_EDIT_MIN_CHARS
-            ):
-                await _edit_stream_message(stream_message, current_text)
-                last_edit_at = now
-                last_edit_len = current_len
-        elif "result" in event:
-            final_text = str(event["result"]).strip()
+    try:
+        async for event in stream_async(_build_agent_input(chat_id, message)):
+            if "data" in event:
+                chunk = str(event["data"])
+                chunks.append(chunk)
+                current_len += len(chunk)
+                current_text = "".join(chunks)
+                if not current_text:
+                    continue
+                now = time.monotonic()
+                if (
+                    now - last_edit_at >= STREAM_EDIT_INTERVAL_SECONDS
+                    or current_len - last_edit_len >= STREAM_EDIT_MIN_CHARS
+                ):
+                    await _edit_stream_message(stream_message, current_text)
+                    last_edit_at = now
+                    last_edit_len = current_len
+            elif "result" in event:
+                final_text = str(event["result"]).strip()
+    except Exception:
+        await _edit_stream_message(stream_message, "⚠️ Fehler beim Generieren.")
+        raise
 
     response = final_text or "".join(chunks).strip()
     await _edit_stream_message(

@@ -93,7 +93,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def _normalize_rule_text(text: str) -> str:
-    normalized = re.sub(r"^[-*]+\s*", "", text.strip())
+    normalized = re.sub(r"^[-*\s]+", "", text.strip())
     return " ".join(normalized.split()).casefold()
 
 
