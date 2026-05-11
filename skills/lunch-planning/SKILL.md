@@ -7,7 +7,7 @@ allowed-tools: get_current_date get_lunch_planning_skill update_lunch_planning_s
 ## Mittagessen-Planung
 
 Rufe bei jeder Mittagessen-Aufgabe zuerst get_lunch_planning_skill auf und befolge
-die dort geladenen Regeln. Diese Regeln liegen ausserhalb des Container-Images und
+die dort geladenen Regeln. Diese Regeln liegen außerhalb des Container-Images und
 können dauerhaft angepasst werden.
 
 Wenn der Nutzer eine dauerhafte Planungsregel oder Präferenz formuliert, speichere

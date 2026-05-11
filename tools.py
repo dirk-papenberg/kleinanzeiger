@@ -81,8 +81,12 @@ def _ensure_lunch_planning_skill_memory() -> Path:
 def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    os.replace(tmp_path, path)
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        os.replace(tmp_path, path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +171,7 @@ def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
         else:
             updated_after = after.strip()
             if bullet not in updated_after.splitlines():
-                updated_after = f"{updated_after}\n{bullet}".strip()
+                updated_after = f"{updated_after}\n{bullet}"
         updated = f"{before.rstrip()}\n\n{marker}\n{updated_after}\n"
     else:
         updated = f"{current}\n\n{marker}\n{bullet}\n"
