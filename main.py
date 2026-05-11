@@ -420,7 +420,7 @@ async def _call_agent_streaming(
 ) -> str:
     """Stream a text-only Strands response into Telegram by editing one message."""
     agent = get_agent(chat_id)
-    stream_message = await context.bot.send_message(chat_id, "🤖 Denke nach…")
+    stream_message = await context.bot.send_message(chat_id, "🤖 Moment, bitte…")
     if not hasattr(agent, "stream_async"):
         response = await _call_agent(chat_id, message)
         await _edit_stream_message(
@@ -433,23 +433,26 @@ async def _call_agent_streaming(
 
     chunks: list[str] = []
     final_text = ""
+    current_len = 0
     last_edit_at = 0.0
     last_edit_len = 0
 
     async for event in agent.stream_async(_build_agent_input(chat_id, message)):
         if "data" in event:
-            chunks.append(str(event["data"]))
+            chunk = str(event["data"])
+            chunks.append(chunk)
+            current_len += len(chunk)
             current_text = "".join(chunks)
             if not current_text:
                 continue
             now = time.monotonic()
             if (
                 now - last_edit_at >= STREAM_EDIT_INTERVAL_SECONDS
-                or len(current_text) - last_edit_len >= STREAM_EDIT_MIN_CHARS
+                or current_len - last_edit_len >= STREAM_EDIT_MIN_CHARS
             ):
                 await _edit_stream_message(stream_message, current_text)
                 last_edit_at = now
-                last_edit_len = len(current_text)
+                last_edit_len = current_len
         elif "result" in event:
             final_text = str(event["result"]).strip()
 
@@ -701,9 +704,9 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user_request:
         return
 
+    d = DRAFTS.get(chat_id)
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     try:
-        d = DRAFTS.get(chat_id)
         if d:
             response = await _call_agent(chat_id, user_request)
         else:

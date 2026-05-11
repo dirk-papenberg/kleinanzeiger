@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -92,9 +93,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def _normalize_rule_text(text: str) -> str:
-    normalized = text.strip()
-    if normalized.startswith(("-", "*")):
-        normalized = normalized[1:].lstrip()
+    normalized = re.sub(r"^[-*]+\s*", "", text.strip())
     return " ".join(normalized.split()).casefold()
 
 
