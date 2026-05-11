@@ -64,6 +64,7 @@ KLEINANZEIGEN_SHIPPING=PICKUP
 # Optional: Storage directories
 KLEINANZEIGEN_WORK_DIR=~/.kleinanzeigen-agent/ads
 KLEINANZEIGEN_QUEUE_DIR=~/.kleinanzeigen-agent/queue
+KLEINANZEIGEN_SESSION_DIR=~/.kleinanzeigen-agent/sessions
 ```
 
 ### Running the Bot
@@ -189,6 +190,7 @@ To enable the "🚀 Direkt schalten" button:
 
 - **Ads**: `~/.kleinanzeigen-agent/ads/` (photos + ad.yaml files)
 - **Queue**: `~/.kleinanzeigen-agent/queue/` (job persistence)
+- **Sessions**: `~/.kleinanzeigen-agent/sessions/` (per-chat conversation history)
 
 ## Architecture
 
