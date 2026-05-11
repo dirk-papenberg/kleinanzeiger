@@ -64,6 +64,7 @@ KLEINANZEIGEN_SHIPPING=PICKUP
 # Optional: Storage directories
 KLEINANZEIGEN_WORK_DIR=~/.kleinanzeigen-agent/ads
 KLEINANZEIGEN_QUEUE_DIR=~/.kleinanzeigen-agent/queue
+# Optional (mainly for local/non-compose runs)
 KLEINANZEIGEN_SESSION_DIR=~/.kleinanzeigen-agent/sessions
 ```
 
@@ -190,7 +191,7 @@ To enable the "🚀 Direkt schalten" button:
 
 - **Ads**: `~/.kleinanzeigen-agent/ads/` (photos + ad.yaml files)
 - **Queue**: `~/.kleinanzeigen-agent/queue/` (job persistence)
-- **Sessions**: `~/.kleinanzeigen-agent/sessions/` (per-chat conversation history)
+- **Sessions**: `~/.kleinanzeigen-agent/sessions/` (per-chat conversation history; with provided Docker Compose setup this stays inside the container and is reset when the container is recreated)
 
 ## Architecture
 
