@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import datetime
 import json
 import logging
@@ -350,14 +349,12 @@ async def _call_agent(
         for img in photos[:8]:
             log.info("[chat=%d] photo %d KB → agent", chat_id, len(img) // 1024)
             content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": base64.standard_b64encode(img).decode(),
+                "image": {
+                    "format": "jpeg",
+                    "source": {"bytes": img},
                 },
             })
-        content.append({"type": "text", "text": message})
+        content.append({"text": message})
         user_input: str | list = content
     else:
         user_input = message
