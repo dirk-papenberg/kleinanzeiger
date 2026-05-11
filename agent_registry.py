@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-import tempfile
 
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
@@ -26,41 +25,9 @@ from tools import get_current_date, get_recipes, get_lunch_plan, save_lunch_plan
 
 log = logging.getLogger("kleinanzeigen-agent.registry")
 
-DEFAULT_SESSION_DIR = Path.home() / ".kleinanzeigen-agent" / "sessions"
-
-
-def _resolve_session_dir() -> Path:
-    configured_env = os.environ.get("KLEINANZEIGEN_SESSION_DIR")
-    configured = Path(configured_env) if configured_env else DEFAULT_SESSION_DIR
-    fallback_candidates = [configured]
-    if configured != DEFAULT_SESSION_DIR:
-        fallback_candidates.append(DEFAULT_SESSION_DIR)
-    fallback_candidates.append(Path(tempfile.gettempdir()) / "kleinanzeigen-agent" / "sessions")
-    last_error: OSError | None = None
-
-    for index, candidate in enumerate(fallback_candidates):
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            if index > 0:
-                error_details = str(last_error) if last_error is not None else "unknown error"
-                log.warning(
-                    "KLEINANZEIGEN_SESSION_DIR unusable (%s: %s); falling back to %s",
-                    configured,
-                    error_details,
-                    candidate,
-                )
-            return candidate
-        except OSError as exc:
-            last_error = exc
-            continue
-
-    raise PermissionError(
-        "No writable session directory found. "
-        f"Tried: {', '.join(str(path) for path in fallback_candidates)}"
-    )
-
-
-SESSION_DIR = _resolve_session_dir()
+SESSION_DIR = Path(
+    os.environ.get("KLEINANZEIGEN_SESSION_DIR", "/data/sessions")
+)
 
 _TOOLS = [get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad]
 
