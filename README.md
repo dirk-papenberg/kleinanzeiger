@@ -12,6 +12,7 @@ A Telegram bot that turns photos into Kleinanzeigen.de ad drafts using Claude Vi
 - **Persistent Queue**: Failed jobs are stored in a backout queue for later retry
 - **Retry Logic**: Automatic retries for transient failures, manual retry for persistent issues
 - **Direct Publishing**: Optionally publish ads directly to Kleinanzeigen (requires `kleinanzeigen-bot`)
+- **Self-improving lunch planning**: Persistent meal-planning rules can be updated by chat and survive container rebuilds
 
 ## Quick Start
 
@@ -66,6 +67,9 @@ KLEINANZEIGEN_WORK_DIR=~/.kleinanzeigen-agent/ads
 KLEINANZEIGEN_QUEUE_DIR=~/.kleinanzeigen-agent/queue
 # Optional (mainly for local/non-compose runs)
 KLEINANZEIGEN_SESSION_DIR=~/.kleinanzeigen-agent/sessions
+
+# Optional: persisted lunch-planning skill memory (default: /data/skills/lunch-planning.md)
+LUNCH_PLANNING_SKILL_MEMORY_PATH=/data/skills/lunch-planning.md
 ```
 
 ### Running the Bot
@@ -192,6 +196,7 @@ To enable the "🚀 Direkt schalten" button:
 - **Ads**: `~/.kleinanzeigen-agent/ads/` (photos + ad.yaml files)
 - **Queue**: `~/.kleinanzeigen-agent/queue/` (job persistence)
 - **Sessions**: `~/.kleinanzeigen-agent/sessions/` (per-chat conversation history; with provided Docker Compose setup this stays inside the container and is reset when the container is recreated)
+- **Lunch planning skill memory**: `/data/skills/lunch-planning.md` by default. The agent reads this external file before meal-planning tasks and can update it when you state durable rules, e.g. weekday meals should avoid time-consuming recipes.
 
 ## Architecture
 

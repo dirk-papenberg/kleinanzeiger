@@ -1,56 +1,17 @@
 ---
 name: lunch-planning
-description: Mittagessen planen, Wochenvorschläge erstellen und im System speichern.
-allowed-tools: get_current_date get_recipes get_lunch_plan save_lunch_plan
+description: Mittagessen planen, Wochenvorschläge erstellen, Regeln lernen und im System speichern.
+allowed-tools: get_current_date get_lunch_planning_skill update_lunch_planning_skill get_recipes get_lunch_plan save_lunch_plan
 ---
 
 ## Mittagessen-Planung
 
-### Tagesansage
-Rufe zuerst get_current_date auf, um das heutige Datum zu kennen, bevor du Pläne
-abrufst oder erstellst. Jeden Morgen um 08:30 Uhr erhältst du eine Aufgabe, das heutige
-Mittagessen anzukündigen. Formatiere es übersichtlich mit Emoji und Namen der Gerichte.
+Rufe bei jeder Mittagessen-Aufgabe zuerst get_lunch_planning_skill auf und befolge
+die dort geladenen Regeln. Diese Regeln liegen ausserhalb des Container-Images und
+können dauerhaft angepasst werden.
 
-### Wochentag-Regeln
-- Dienstags kocht Mama. Plane für Dienstag **niemals** ein Rezept ein und speichere
-  auch keinen Eintrag. Weise in der Vorschlagsliste explizit darauf hin:
-  "Dienstag: Mama kocht 👩‍🍳"
+Wenn der Nutzer eine dauerhafte Planungsregel oder Präferenz formuliert, speichere
+sie mit update_lunch_planning_skill und bestätige kurz die Aktualisierung.
 
-### Wochenplanung
-Wenn kein Mittagessen für morgen geplant ist, erstelle einen Vorschlag für die fehlenden
-Tage der nächsten Woche (nur Tage ohne bestehenden Eintrag – keine bereits geplanten Tage
-überschreiben).
-
-Vorgehensweise:
-1. Rufe get_current_date auf, um das heutige Datum zu kennen.
-2. Rufe get_lunch_plan einmalig auf: startDate = heute minus 84 Tage, endDate = Ende der
-   nächsten Woche (nächster Sonntag). Diese Antwort liefert gleichzeitig:
-   - Die bestehenden Einträge der nächsten Woche (werden nicht überschrieben)
-   - Den vollständigen Verlauf der letzten 12 Wochen für die Abwechslungsprüfung
-3. Rufe get_recipes auf, um alle verfügbaren Rezepte zu laden.
-4. Wähle Rezepte nach diesen Kriterien (Priorität absteigend):
-   a. Abwechslung: Prüfe den Verlauf aus Schritt 2. Gerichte, die in den letzten 2 Wochen
-      vorkamen, möglichst vermeiden. Gerichte aus den letzten 4 Wochen nur wenn nötig.
-      Das Feld lastPlanDate in den Rezeptdaten dient als zusätzlicher Hinweis, aber der
-      tatsächliche Verlauf aus Schritt 2 hat Vorrang.
-   b. Vielfalt: Mische verschiedene Kategorien (Hauptgericht, Suppe, etc.) über die Woche.
-   c. Versteckte Rezepte (hide=true) nur dann verwenden, wenn es keine passenden
-      sichtbaren Alternativen gibt.
-   d. Saisonalität: Bei sonst gleichwertigen Optionen bevorzuge saisonale Zutaten
-      (Mitteleuropa). Dies ist ein optionaler Tiebreaker, kein Pflichtkriterium.
-5. Präsentiere den Vorschlag als übersichtliche Liste (Datum + Rezeptname).
-6. Warte auf Bestätigung des Nutzers, bevor du speicherst.
-   Speichere NIEMALS ohne explizite Bestätigung ("Annehmen", "Ja", "OK", "Speichern").
-
-### Rezeptreferenzen beim Speichern
-Beim Aufruf von save_lunch_plan übergibst du im Feld recipes eine Liste von Objekten
-mit mindestens {"id": <rezept-id>}. Das Tool lädt die vollständigen Rezeptdaten intern
-selbst nach – übergib keine vollständigen Rezeptobjekte.
-
-### Änderungswünsche
-Wenn der Nutzer einzelne Tage ändern möchte, passe den Vorschlag entsprechend an und
-zeige die aktualisierte Liste. Warte erneut auf Bestätigung.
-
-### Bestätigung und Speichern
-Erst nach expliziter Bestätigung rufst du save_lunch_plan für jeden Tag auf.
-Gib anschließend eine Zusammenfassung aus, was gespeichert wurde.
+Nutze get_current_date für Datumsbezug, get_lunch_plan/get_recipes für Vorschläge
+und save_lunch_plan erst nach ausdrücklicher Bestätigung des Nutzers.

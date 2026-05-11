@@ -12,6 +12,7 @@ import datetime
 import logging
 import os
 import uuid
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -29,6 +30,59 @@ RECIPES_URL = os.environ.get(
     "LUNCH_RECIPES_URL",
     "http://ubuntu.fritz.box:880/resources/recipes",
 )
+DEFAULT_LUNCH_PLANNING_SKILL_MEMORY_PATH = "/data/skills/lunch-planning.md"
+
+_DEFAULT_LUNCH_PLANNING_SKILL = """# Anpassbare Mittagessen-Regeln
+
+## Tagesansage
+- Rufe zuerst get_current_date auf, um das heutige Datum zu kennen, bevor du Pläne abrufst oder erstellst.
+- Jeden Morgen um 08:30 Uhr erhältst du eine Aufgabe, das heutige Mittagessen anzukündigen. Formatiere es übersichtlich mit Emoji und Namen der Gerichte.
+
+## Wochentag-Regeln
+- Dienstags kocht Mama. Plane für Dienstag niemals ein Rezept ein und speichere auch keinen Eintrag. Weise in der Vorschlagsliste explizit darauf hin: "Dienstag: Mama kocht 👩‍🍳"
+
+## Wochenplanung
+- Wenn kein Mittagessen für morgen geplant ist, erstelle einen Vorschlag für die fehlenden Tage der nächsten Woche.
+- Überschreibe keine bereits geplanten Tage.
+- Rufe get_lunch_plan einmalig auf: startDate = heute minus 84 Tage, endDate = Ende der nächsten Woche (nächster Sonntag).
+- Rufe get_recipes auf, um alle verfügbaren Rezepte zu laden.
+- Wähle Rezepte mit diesen Prioritäten: Abwechslung, Vielfalt über Kategorien, versteckte Rezepte nur wenn nötig, saisonale Zutaten als optionaler Tiebreaker.
+- Vermeide Gerichte aus den letzten 2 Wochen möglichst; Gerichte aus den letzten 4 Wochen nur wenn nötig.
+- Präsentiere Vorschläge als übersichtliche Liste mit Datum und Rezeptname.
+- Speichere niemals ohne explizite Bestätigung des Nutzers.
+
+## Speichern
+- Übergib save_lunch_plan im Feld recipes eine Liste von Objekten mit mindestens {"id": <rezept-id>}.
+- Übergib keine vollständigen Rezeptobjekte.
+- Gib nach dem Speichern eine Zusammenfassung aus.
+
+## Nutzerregeln
+- Noch keine zusätzlichen Regeln.
+"""
+
+
+def _lunch_planning_skill_memory_path() -> Path:
+    return Path(
+        os.environ.get(
+            "LUNCH_PLANNING_SKILL_MEMORY_PATH",
+            DEFAULT_LUNCH_PLANNING_SKILL_MEMORY_PATH,
+        )
+    )
+
+
+def _ensure_lunch_planning_skill_memory() -> Path:
+    path = _lunch_planning_skill_memory_path()
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_DEFAULT_LUNCH_PLANNING_SKILL, encoding="utf-8")
+    return path
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +111,70 @@ def get_current_date() -> dict:
         "weekday": weekdays_de[now.weekday()],
         "weekday_en": now.strftime("%A"),
     }
+
+
+@tool
+def get_lunch_planning_skill() -> str:
+    """Read the mutable lunch-planning skill text from the external data file.
+
+    Always call this before planning or announcing lunch, and before updating the
+    lunch-planning rules, so the latest persistent user preferences are included.
+    The file is stored outside the container image by default:
+    /data/skills/lunch-planning.md.
+    """
+    path = _ensure_lunch_planning_skill_memory()
+    return path.read_text(encoding="utf-8")
+
+
+@tool
+def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
+    """Edit the mutable lunch-planning skill text in the external data file.
+
+    Use this when the user states a durable lunch-planning preference or rule,
+    for example "Bei Wochentagen sollten keine Rezepte geplant werden, die lange
+    dauern". Prefer mode="append" for new rules. Use mode="replace" only after
+    reading the current skill with get_lunch_planning_skill and preserving all
+    still-valid rules in the replacement content.
+
+    Args:
+        content: New rule text for append mode, or the full file content for replace mode.
+        mode: "append" to add a bullet under Nutzerregeln, or "replace" to rewrite the file.
+    """
+    path = _ensure_lunch_planning_skill_memory()
+    normalized_mode = (mode or "append").strip().lower()
+    normalized_content = (content or "").strip()
+    if not normalized_content:
+        return "Fehler: Keine Regel angegeben."
+
+    if normalized_mode == "replace":
+        _write_text_atomic(path, normalized_content.rstrip() + "\n")
+        return f"Mittagessen-Regeln wurden ersetzt ({path})."
+
+    if normalized_mode != "append":
+        return "Fehler: mode muss 'append' oder 'replace' sein."
+
+    current = path.read_text(encoding="utf-8").rstrip()
+    bullet = normalized_content
+    if not bullet.startswith(("-", "*")):
+        bullet = f"- {bullet}"
+
+    marker = "## Nutzerregeln"
+    if marker in current:
+        before, after = current.split(marker, 1)
+        after_lines = after.strip().splitlines()
+        if after_lines == ["- Noch keine zusätzlichen Regeln."]:
+            updated_after = bullet
+        else:
+            updated_after = after.strip()
+            if bullet not in updated_after.splitlines():
+                updated_after = f"{updated_after}\n{bullet}".strip()
+        updated = f"{before.rstrip()}\n\n{marker}\n{updated_after}\n"
+    else:
+        updated = f"{current}\n\n{marker}\n{bullet}\n"
+
+    _write_text_atomic(path, updated)
+    return f"Mittagessen-Regel gespeichert ({path})."
+
 
 def _fetch_all_recipes() -> list[dict]:
     """Internal helper – returns full recipe objects including hidden ones."""
