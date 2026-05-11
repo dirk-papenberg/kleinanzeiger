@@ -32,7 +32,7 @@ RECIPES_URL = os.environ.get(
 )
 DEFAULT_LUNCH_PLANNING_SKILL_MEMORY_PATH = "/data/skills/lunch-planning.md"
 
-_DEFAULT_LUNCH_PLANNING_SKILL = """# Anpassbare Mittagessen-Regeln
+_DEFAULT_LUNCH_PLANNING_SKILL_CONTENT = """# Anpassbare Mittagessen-Regeln
 
 ## Tagesansage
 - Rufe zuerst get_current_date auf, um das heutige Datum zu kennen, bevor du Pläne abrufst oder erstellst.
@@ -74,7 +74,7 @@ def _ensure_lunch_planning_skill_memory() -> Path:
     path = _lunch_planning_skill_memory_path()
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_DEFAULT_LUNCH_PLANNING_SKILL, encoding="utf-8")
+        path.write_text(_DEFAULT_LUNCH_PLANNING_SKILL_CONTENT, encoding="utf-8")
     return path
 
 
@@ -87,6 +87,13 @@ def _write_text_atomic(path: Path, content: str) -> None:
     except Exception:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def _normalize_rule_text(text: str) -> str:
+    normalized = text.strip()
+    while normalized.startswith(("-", "*")):
+        normalized = normalized[1:].strip()
+    return " ".join(normalized.split()).casefold()
 
 
 # ---------------------------------------------------------------------------
@@ -165,12 +172,19 @@ def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
     marker = "## Nutzerregeln"
     if marker in current:
         before, after = current.split(marker, 1)
-        after_lines = after.strip().splitlines()
-        if after_lines == ["- Noch keine zusätzlichen Regeln."]:
+        after_content = after.strip()
+        if _normalize_rule_text(after_content) == _normalize_rule_text(
+            "Noch keine zusätzlichen Regeln."
+        ):
             updated_after = bullet
         else:
-            updated_after = after.strip()
-            if bullet not in updated_after.splitlines():
+            updated_after = after_content
+            existing_rules = {
+                _normalize_rule_text(line)
+                for line in updated_after.splitlines()
+                if line.strip()
+            }
+            if _normalize_rule_text(bullet) not in existing_rules:
                 updated_after = f"{updated_after}\n{bullet}"
         updated = f"{before.rstrip()}\n\n{marker}\n{updated_after}\n"
     else:
