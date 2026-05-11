@@ -29,7 +29,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 # Copy application source
-COPY --chown=appuser main.py background_worker.py queue_manager.py ./
+COPY --chown=appuser main.py background_worker.py queue_manager.py agent_registry.py tools.py skills.py ./
+COPY --chown=appuser skills/ ./skills/
 
 USER appuser
 

@@ -18,3 +18,5 @@ services:
     volumes:
       # persistent work/queue dirs and config survive container restarts
       - /opt/kleinanzeigen-agent/data:/data
+      # agent session history (per-chat conversation, survives restarts)
+      - /opt/kleinanzeigen-agent/sessions:/data/sessions

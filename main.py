@@ -1,4 +1,4 @@
-"""Telegram bot that turns photos into Kleinanzeigen.de drafts via Claude Vision."""
+"""Telegram bot: Kleinanzeigen ad drafting + lunch planning, via Strands agent."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ from io import BytesIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from anthropic import AsyncAnthropic, AsyncAnthropicBedrock
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.helpers import escape_markdown
 from telegram.constants import ChatAction, ParseMode
@@ -35,7 +35,9 @@ from telegram.ext import (
 )
 
 from background_worker import BackgroundWorker
-from queue_manager import QueueManager, JobStatus
+from queue_manager import QueueManager
+from agent_registry import get_agent, clear_agent
+from tools import set_queue_enqueue_fn
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -45,28 +47,6 @@ log = logging.getLogger("kleinanzeigen-agent")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 ALBUM_DEBOUNCE_SECONDS = 1.5
-
-# Provider selection.
-#   LLM_PROVIDER=bedrock  -> AWS Bedrock (auth via AWS_BEARER_TOKEN_BEDROCK)
-#   LLM_PROVIDER=anthropic -> direct Anthropic API (auth via ANTHROPIC_API_KEY)
-# Default: auto-detect (bedrock if AWS_BEARER_TOKEN_BEDROCK is set, else anthropic).
-def _detect_provider() -> str:
-    p = os.environ.get("LLM_PROVIDER", "").lower()
-    if p in ("bedrock", "anthropic"):
-        return p
-    return "bedrock" if os.environ.get("AWS_BEARER_TOKEN_BEDROCK") else "anthropic"
-
-
-LLM_PROVIDER = _detect_provider()
-# Model id depends on provider. On Bedrock you need an inference-profile ID,
-# e.g. "us.anthropic.claude-sonnet-4-5-20250929-v1:0".
-CLAUDE_MODEL = os.environ.get(
-    "CLAUDE_MODEL",
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    if LLM_PROVIDER == "bedrock"
-    else "claude-sonnet-4-6",
-)
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 KLEINANZEIGEN_BOT_CMD = os.environ.get("KLEINANZEIGEN_BOT_CMD", "")
 KLEINANZEIGEN_CONFIG = os.environ.get(
@@ -104,43 +84,11 @@ QUEUE_MANAGER: QueueManager | None = None
 BACKGROUND_WORKER: BackgroundWorker | None = None
 
 
-def _price_type_to_bot(s: str) -> str:
-    s = (s or "").strip().upper()
-    if s in ("FP", "FESTPREIS", "FIXED"):
-        return "FIXED"
-    if s in ("ZU VERSCHENKEN", "GIVE_AWAY", "GIVEAWAY", "VERSCHENKEN"):
-        return "GIVE_AWAY"
-    return "NEGOTIABLE"  # VB, VHB, default
-
-SYSTEM_PROMPT = """Du bist Assistent für Kleinanzeigen.de-Inserate. Auf Fotos siehst du einen Gegenstand, den jemand verkaufen will.
-
-Erstelle ein realistisches Inserat in deutscher Sprache und antworte ausschliesslich als JSON-Objekt mit diesen Feldern:
-
-{
-  "title": "kurz, max. 65 Zeichen, praegnant, mit Marke/Modell falls erkennbar",
-  "category": "passende Kleinanzeigen-Kategorie als Vorschlag, z.B. 'Elektronik > Audio & Hifi'",
-  "condition": "Neu | Sehr gut | Gut | In Ordnung | Defekt",
-  "description": "3-6 Saetze: was ist es, Zustand, Besonderheiten, Masse/Groesse falls erkennbar. Sachlich, freundlich, ohne Uebertreibung. Kein Kontaktdaten-Geblubber. Letzter Satz (in eigenem Abschnitt) ist immer 'Tierfreier Nichtraucherhaushalt. Versand bei Kostenübernahme möglich.'",
-  "price_eur": 25,
-  "price_type": "FP | VB | VHB | zu verschenken",
-  "price_reasoning": "1 Satz: warum dieser Preis (z.B. 'gebraucht ca. 40% vom Neupreis ~60 EUR')",
-  "missing_info": ["Liste der Dinge, die du fuer ein besseres Inserat noch wissen solltest, z.B. 'Groesse', 'Funktioniert noch?'"],
-  "photo_order": [0, 2, 1]
-}
-
-Das Feld photo_order enthaelt die 0-basierten Indizes aller uebergebenen Fotos in der Reihenfolge, in der sie im Inserat erscheinen sollen – das beste Uebersichtsfoto zuerst, Detail- oder Zusatzfotos danach. Bei nur einem Foto: [0].
-
-Wenn du den Gegenstand nicht erkennst, setze title auf '?' und beschreibe in description, was du siehst. Antworte NUR mit dem JSON, keine Markdown-Codefences, kein Fliesstext drumherum."""
-
-
-EDIT_SYSTEM_PROMPT = """Du bekommst ein bestehendes Kleinanzeigen-Inserat als JSON und einen Aenderungswunsch des Nutzers in deutscher Sprache.
-
-Wende den Wunsch an und gib das **vollstaendige aktualisierte JSON** mit denselben Feldern zurueck (title, category, condition, description, price_eur, price_type, price_reasoning, missing_info). Aendere nur, was der Nutzer angefragt hat; alle anderen Felder uebernimmst du unveraendert. Wenn der Wunsch unklar oder unmoeglich ist, gib das JSON unveraendert zurueck und schreib eine kurze Erklaerung in price_reasoning.
-
-Wichtig: Der Titel darf maximal 65 Zeichen lang sein.
-
-Antworte NUR mit dem JSON, keine Codefences, kein Fliesstext."""
-
+# ---------------------------------------------------------------------------
+# Draft state — photos + last parsed ad JSON from the agent.
+# Conversation history lives in the Strands agent; this is only a view/cache
+# used for rendering and writing ad files.
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Draft:
@@ -155,88 +103,27 @@ class Draft:
     missing_info: list[str] = field(default_factory=list)
 
 
+# Mutable per-chat state
 DRAFTS: dict[int, Draft] = {}
 PENDING_ALBUMS: dict[tuple[int, str], dict] = {}
-CHAT_PHOTO_POOL: dict[int, list[bytes]] = {}  # accumulated photos per chat (cleared on reset)
-ACTIVE_GENERATION_TASKS: dict[int, asyncio.Task] = {}  # in-progress generation tasks per chat
+CHAT_PHOTO_POOL: dict[int, list[bytes]] = {}
+ACTIVE_GENERATION_TASKS: dict[int, asyncio.Task] = {}
+
+# chat_ids that have a pending lunch plan suggestion awaiting confirmation
+PENDING_LUNCH_PLAN: set[int] = set()
 
 
-def get_anthropic() -> AsyncAnthropic | AsyncAnthropicBedrock:
-    if LLM_PROVIDER == "bedrock":
-        if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            raise RuntimeError(
-                "LLM_PROVIDER=bedrock requires AWS_BEARER_TOKEN_BEDROCK"
-            )
-        # The SDK reads AWS_BEARER_TOKEN_BEDROCK from env automatically.
-        return AsyncAnthropicBedrock(aws_region=AWS_REGION)
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
-    return AsyncAnthropic(api_key=key)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-
-async def analyze_photos(photos: list[bytes]) -> dict:
-    client = get_anthropic()
-    content: list[dict] = []
-    for img in photos[:8]:
-        llm_img = img
-        log.info("photo: %d KB -> %d KB for LLM", len(img) // 1024, len(llm_img) // 1024)
-        content.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": base64.standard_b64encode(llm_img).decode(),
-                },
-            }
-        )
-    content.append({"type": "text", "text": "Erstelle das Inserat-JSON."})
-
-    msg = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1024,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
-    )
-    text = "".join(b.text for b in msg.content if b.type == "text").strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
-    return json.loads(text)
-
-
-def _draft_to_json(d: Draft) -> str:
-    return json.dumps(
-        {
-            "title": d.title,
-            "category": d.category,
-            "condition": d.condition,
-            "description": d.description,
-            "price_eur": d.price_eur,
-            "price_type": d.price_type,
-            "price_reasoning": d.price_reasoning,
-            "missing_info": d.missing_info,
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
-async def apply_edit(d: Draft, user_request: str) -> dict:
-    """Ask Claude to apply a free-form edit request to the current draft."""
-    client = get_anthropic()
-    user_msg = (
-        f"Aktuelles Inserat:\n```json\n{_draft_to_json(d)}\n```\n\n"
-        f"Aenderungswunsch des Nutzers:\n{user_request}"
-    )
-    msg = await client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=1024,
-        system=EDIT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_msg}],
-    )
-    text = "".join(b.text for b in msg.content if b.type == "text").strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
-    return json.loads(text)
+def _price_type_to_bot(s: str) -> str:
+    s = (s or "").strip().upper()
+    if s in ("FP", "FESTPREIS", "FIXED"):
+        return "FIXED"
+    if s in ("ZU VERSCHENKEN", "GIVE_AWAY", "GIVEAWAY", "VERSCHENKEN"):
+        return "GIVE_AWAY"
+    return "NEGOTIABLE"  # VB, VHB, default
 
 
 def _apply_dict_to_draft(d: Draft, data: dict) -> None:
@@ -282,7 +169,7 @@ def render_final(d: Draft) -> str:
     )
 
 
-def keyboard() -> InlineKeyboardMarkup:
+def ad_keyboard() -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton("✅ Copy-Paste", callback_data="ok"),
@@ -295,6 +182,27 @@ def keyboard() -> InlineKeyboardMarkup:
             0, [InlineKeyboardButton("🚀 Direkt schalten", callback_data="publish")]
         )
     return InlineKeyboardMarkup(rows)
+
+
+def plan_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Annehmen & speichern", callback_data="plan_accept"),
+            InlineKeyboardButton("✏️ Ändern", callback_data="plan_change"),
+        ]
+    ])
+
+
+def _parse_json_from_response(response: str) -> dict | None:
+    """Extract the first JSON object from an agent response, or return None."""
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.MULTILINE).strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def _yaml_escape(s: str) -> str:
@@ -421,19 +329,65 @@ async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
-# Lunch plan
+# Agent bridge
 # ---------------------------------------------------------------------------
 
-async def fetch_lunch_plan(date: datetime.date) -> list[dict]:
-    """Fetch the meal plan for *date* from the planning API."""
-    date_str = date.isoformat()
-    url = f"{LUNCH_PLAN_BASE_URL}?startDate={date_str}&endDate={date_str}"
+async def _call_agent(
+    chat_id: int,
+    message: str,
+    photos: list[bytes] | None = None,
+) -> str:
+    """Invoke the Strands agent for *chat_id* and return the text response.
+
+    The agent is called via asyncio.to_thread so the synchronous Strands call
+    does not block the Telegram event loop. All tool functions in tools.py are
+    intentionally synchronous for this reason.
+    """
+    agent = get_agent(chat_id)
+
+    if photos:
+        content: list[dict] = []
+        for img in photos[:8]:
+            log.info("[chat=%d] photo %d KB → agent", chat_id, len(img) // 1024)
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.standard_b64encode(img).decode(),
+                },
+            })
+        content.append({"type": "text", "text": message})
+        user_input: str | list = content
+    else:
+        user_input = message
+
+    result = await asyncio.to_thread(agent, user_input)
+    return str(result)
+
+
+# ---------------------------------------------------------------------------
+# Lunch plan helpers
+# ---------------------------------------------------------------------------
+
+async def _fetch_lunch_plan_range(
+    start: datetime.date, end: datetime.date
+) -> list[dict]:
+    url = (
+        f"{LUNCH_PLAN_BASE_URL}"
+        f"?startDate={start.isoformat()}&endDate={end.isoformat()}"
+    )
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers={"Accept": "application/json"})
         resp.raise_for_status()
         data = resp.json()
-    # API may return a list of day-entries or a single dict
     return data if isinstance(data, list) else [data]
+
+
+def _has_meal(plan_entries: list[dict], date: datetime.date) -> bool:
+    date_str = date.isoformat()
+    entry = next((e for e in plan_entries if e.get("date") == date_str), None)
+    return bool(entry and entry.get("recipes"))
 
 
 def format_lunch_message(plan_entries: list[dict], date: datetime.date) -> str:
@@ -459,22 +413,101 @@ def format_lunch_message(plan_entries: list[dict], date: datetime.date) -> str:
     return "\n".join(lines)
 
 
-async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """JobQueue callback: send today's lunch plan to all allowed users at 08:30."""
-    today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
-    log.info("Sending lunch plan for %s to %d user(s)", today, len(ALLOWED_USER_IDS))
+async def _trigger_week_plan(
+    user_id: int,
+    today: datetime.date,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Ask the agent to propose a meal plan for the coming week and present it."""
+    days_until_monday = (7 - today.weekday()) % 7 or 7
+    next_monday = today + datetime.timedelta(days=days_until_monday)
+    next_friday = next_monday + datetime.timedelta(days=4)
+
+    trigger = (
+        f"Heute ist {today.isoformat()}. Für {next_monday.isoformat()} bis "
+        f"{next_friday.isoformat()} fehlt noch ein Mittagessen-Plan. "
+        "Bitte erstelle einen Vorschlag für die fehlenden Tage. "
+        "Zeige den Vorschlag als übersichtliche Liste (Datum + Gericht)."
+    )
     try:
-        plan = await fetch_lunch_plan(today)
+        await context.bot.send_chat_action(user_id, ChatAction.TYPING)
+        response = await _call_agent(user_id, trigger)
+        await context.bot.send_message(
+            user_id,
+            response,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=plan_keyboard(),
+        )
+        PENDING_LUNCH_PLAN.add(user_id)
+        log.info(
+            "[chat=%d] Lunch plan suggestion sent for %s–%s",
+            user_id, next_monday, next_friday,
+        )
+    except Exception as e:
+        log.error("[chat=%d] Failed to send lunch plan suggestion: %s", user_id, e)
+
+
+async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """JobQueue callback: send today's lunch plan at 08:30.
+
+    If tomorrow has no meal planned, proactively trigger a week plan suggestion.
+    """
+    today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
+    tomorrow = today + datetime.timedelta(days=1)
+    log.info("Sending lunch plan for %s to %d user(s)", today, len(ALLOWED_USER_IDS))
+
+    try:
+        plan_range = await _fetch_lunch_plan_range(today, tomorrow)
     except Exception as e:
         log.error("Failed to fetch lunch plan: %s", e)
         return
 
-    msg = format_lunch_message(plan, today)
+    today_msg = format_lunch_message(plan_range, today)
+    tomorrow_has_meal = _has_meal(plan_range, tomorrow)
+
     for user_id in ALLOWED_USER_IDS:
         try:
-            await context.bot.send_message(user_id, msg, parse_mode=ParseMode.MARKDOWN)
+            await context.bot.send_message(
+                user_id, today_msg, parse_mode=ParseMode.MARKDOWN
+            )
         except Exception as e:
-            log.error("Failed to send lunch plan to user %d: %s", user_id, e)
+            log.error("Failed to send today's lunch to user %d: %s", user_id, e)
+            continue
+
+        if not tomorrow_has_meal:
+            await _trigger_week_plan(user_id, today, context)
+
+
+async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "Hallo! Ich kann zwei Dinge:\n\n"
+        "📸 *Kleinanzeigen-Inserate* — Schick mir ein Foto (oder mehrere als Album) "
+        "von dem Gegenstand, den du verkaufen willst.\n\n"
+        "🍽️ *Mittagessen-Planung* — Jeden Morgen um 08:30 schicke ich dir den "
+        "aktuellen Essensplan. Falls für die nächste Woche noch etwas fehlt, "
+        "schlage ich einen Plan vor.\n\n"
+        "Befehle:\n"
+        "/lunch — Heutiges Mittagessen anzeigen\n"
+        "/plan — Essensplan für nächste Woche vorschlagen\n"
+        "/neu — Konversation zurücksetzen\n"
+        "/queue — Warteschlangen-Status",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_neu(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    DRAFTS.pop(chat_id, None)
+    CHAT_PHOTO_POOL.pop(chat_id, None)
+    task = ACTIVE_GENERATION_TASKS.pop(chat_id, None)
+    if task and not task.done():
+        task.cancel()
+    PENDING_LUNCH_PLAN.discard(chat_id)
+    clear_agent(chat_id)
+    log.info("[chat=%d] /neu — state cleared", chat_id)
+    await update.message.reply_text(
+        "Ok, Konversation zurückgesetzt. Schick mir ein Foto oder stell eine Frage."
+    )
 
 
 async def cmd_lunch(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -482,38 +515,21 @@ async def cmd_lunch(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
     await update.message.reply_text("🔍 Hole Mittagessen…")
     try:
-        plan = await fetch_lunch_plan(today)
+        plan = await _fetch_lunch_plan_range(today, today)
     except Exception as e:
-        log.error("Failed to fetch lunch plan on demand: %s", e)
-        await update.message.reply_text(f"Fehler beim Abrufen des Mittagessens: {e}")
+        log.error("cmd_lunch: fetch failed: %s", e)
+        await update.message.reply_text(f"Fehler beim Abrufen: {e}")
         return
     msg = format_lunch_message(plan, today)
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
 
-async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Schick mir ein Foto (oder mehrere als Album) von dem Ding, das du verkaufen willst. "
-        "Ich mache dir Titel, Beschreibung und Preisvorschlag für Kleinanzeigen.de.\n\n"
-        "Wenn dir was nicht passt, schreib es einfach in normaler Sprache, z.B.:\n"
-        "• \"Preis auf 30 erhöhen\"\n"
-        "• \"Beschreibung etwas kürzer\"\n"
-        "• \"erwähne, dass es noch in OVP ist\"\n"
-        "• \"lockerer formulieren\"\n\n"
-        "Befehl: /neu — aktuellen Entwurf verwerfen"
-    )
-
-
-async def cmd_neu(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually trigger a lunch plan suggestion for next week via /plan."""
     chat_id = update.effective_chat.id
-    had_draft = chat_id in DRAFTS
-    DRAFTS.pop(chat_id, None)
-    CHAT_PHOTO_POOL.pop(chat_id, None)
-    _task = ACTIVE_GENERATION_TASKS.pop(chat_id, None)
-    if _task and not _task.done():
-        _task.cancel()
-    log.info("[chat=%d] /neu — draft discarded=%s", chat_id, had_draft)
-    await update.message.reply_text("Ok, Entwurf verworfen. Schick neue Fotos.")
+    today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
+    await update.message.reply_text("🤔 Erstelle Essensplan-Vorschlag…")
+    await _trigger_week_plan(chat_id, today, context)
 
 
 async def cmd_queue_status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -583,35 +599,40 @@ async def cmd_retry_job(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Free-form edit request for the current draft."""
+    """Route free-form text through the Strands agent."""
     chat_id = update.effective_chat.id
     user_request = (update.message.text or "").strip()
     log.info("[chat=%d] text message: %r", chat_id, user_request[:200])
-    d = DRAFTS.get(chat_id)
-    if not d:
-        log.info("[chat=%d] no active draft, ignoring text", chat_id)
-        await update.message.reply_text(
-            "Kein Entwurf aktiv — schick mir erst ein Foto."
-        )
-        return
     if not user_request:
         return
 
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-    log.info("[chat=%d] applying edit: %r", chat_id, user_request[:200])
     try:
-        data = await apply_edit(d, user_request)
+        response = await _call_agent(chat_id, user_request)
     except Exception as e:
-        log.exception("edit failed")
-        await context.bot.send_message(chat_id, f"Konnte den Wunsch nicht umsetzen: {e}")
+        log.exception("[chat=%d] agent call failed", chat_id)
+        await context.bot.send_message(chat_id, f"Fehler: {e}")
         return
 
-    _apply_dict_to_draft(d, data)
+    # If there is an active draft and the response is JSON, update it
+    d = DRAFTS.get(chat_id)
+    if d:
+        parsed = _parse_json_from_response(response)
+        if parsed and "title" in parsed:
+            _apply_dict_to_draft(d, parsed)
+            await context.bot.send_message(
+                chat_id,
+                render_draft(d),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=ad_keyboard(),
+            )
+            return
+
+    # For lunch plan conversations, re-attach the confirmation keyboard so
+    # the user can accept or keep modifying after back-and-forth edits.
+    markup = plan_keyboard() if chat_id in PENDING_LUNCH_PLAN else None
     await context.bot.send_message(
-        chat_id,
-        render_draft(d),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard(),
+        chat_id, response, parse_mode=ParseMode.MARKDOWN, reply_markup=markup
     )
 
 
@@ -697,20 +718,26 @@ async def _process_album_after_delay(
 async def _process_photos(
     chat_id: int, photos: list[bytes], context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    log.info("[chat=%d] processing %d photo(s) with LLM", chat_id, len(photos))
+    log.info("[chat=%d] processing %d photo(s) via agent", chat_id, len(photos))
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     try:
-        data = await analyze_photos(photos)
+        response = await _call_agent(chat_id, "Erstelle das Inserat-JSON.", photos=photos)
     except Exception as e:
-        log.exception("analyze failed")
+        log.exception("[chat=%d] agent photo processing failed", chat_id)
         await context.bot.send_message(chat_id, f"Fehler bei der Analyse: {e}")
         return
 
-    d = Draft(photos=photos)
-    _apply_dict_to_draft(d, data)
+    parsed = _parse_json_from_response(response)
+    if not parsed or "title" not in parsed:
+        # Agent returned plain text — unlikely but handle gracefully
+        await context.bot.send_message(chat_id, response, parse_mode=ParseMode.MARKDOWN)
+        return
 
-    # Reorder photos as Claude suggested (best overview first)
-    order = data.get("photo_order")
+    d = Draft(photos=photos)
+    _apply_dict_to_draft(d, parsed)
+
+    # Reorder photos as the agent suggested
+    order = parsed.get("photo_order")
     if order and isinstance(order, list) and len(order) == len(photos):
         try:
             reordered = [photos[int(i)] for i in order if 0 <= int(i) < len(photos)]
@@ -731,7 +758,7 @@ async def _process_photos(
         chat_id,
         render_draft(d),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard(),
+        reply_markup=ad_keyboard(),
     )
 
 
@@ -763,6 +790,35 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await q.answer()
     chat_id = update.effective_chat.id
     log.info("[chat=%d] button pressed: %r", chat_id, q.data)
+
+    # ── Lunch plan confirmation ────────────────────────────────────────────
+    if q.data == "plan_accept":
+        agent = get_agent(chat_id)
+        agent.state["plan_confirmed"] = True
+        PENDING_LUNCH_PLAN.discard(chat_id)
+        await q.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        try:
+            response = await _call_agent(chat_id, "Bitte speichere den Plan jetzt.")
+            await context.bot.send_message(
+                chat_id, response, parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            log.exception("[chat=%d] plan save failed", chat_id)
+            await context.bot.send_message(chat_id, f"Fehler beim Speichern: {e}")
+        finally:
+            agent.state["plan_confirmed"] = False
+        return
+
+    if q.data == "plan_change":
+        await q.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_message(
+            chat_id,
+            "Was soll geändert werden? Schreib mir, welche Tage oder Gerichte du anpassen möchtest.",
+        )
+        return
+
+    # ── Ad draft buttons ────────────────────────────────────────────────
     d = DRAFTS.get(chat_id)
     if not d:
         await q.edit_message_text("Kein Entwurf mehr aktiv.")
@@ -792,39 +848,25 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         await q.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        
-        # Write ad files
         try:
             ad_file = write_ad_files(d)
         except Exception as e:
             log.exception("Failed to write ad files")
             await context.bot.send_message(chat_id, f"Fehler beim Speichern: {e}")
             return
-
-        # Queue the publish job
         job_id = str(uuid.uuid4())
         QUEUE_MANAGER.enqueue(
             job_id=job_id,
             chat_id=chat_id,
             job_type="publish_ad",
-            data={
-                "ad_file": str(ad_file),
-                "chat_id": chat_id,
-            },
+            data={"ad_file": str(ad_file), "chat_id": chat_id},
         )
-
-        # Notify user that job is queued
         await context.bot.send_message(
             chat_id,
             f"⏳ Anzeige wird geschaltet…\n_Job-ID: {job_id[:8]}_",
             parse_mode=ParseMode.MARKDOWN,
         )
-        log.info(
-            "[chat=%d job=%s] Publish job queued",
-            chat_id, job_id,
-        )
-        
-        # Clear draft and photo pool so user can start fresh
+        log.info("[chat=%d job=%s] Publish job queued", chat_id, job_id)
         DRAFTS.pop(chat_id, None)
         CHAT_PHOTO_POOL.pop(chat_id, None)
         await context.bot.send_message(
@@ -832,7 +874,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Du kannst jetzt das nächste Inserat vorbereiten. "
             "Ich informiere dich, wenn das Schalten abgeschlossen ist.",
         )
-
     elif q.data == "cancel":
         DRAFTS.pop(chat_id, None)
         CHAT_PHOTO_POOL.pop(chat_id, None)
@@ -851,25 +892,16 @@ def main() -> None:
     if not ALLOWED_USER_IDS:
         raise SystemExit("ALLOWED_USERS not set – set a comma-separated list of Telegram user IDs")
     log.info("Access restricted to user IDs: %s", ALLOWED_USER_IDS)
-    if LLM_PROVIDER == "bedrock":
-        if not os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            raise SystemExit("AWS_BEARER_TOKEN_BEDROCK not set (LLM_PROVIDER=bedrock)")
-    else:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise SystemExit("ANTHROPIC_API_KEY not set")
-    log.info("LLM provider=%s model=%s", LLM_PROVIDER, CLAUDE_MODEL)
 
-    # Initialize queue manager and background worker
+    # Initialize queue manager and register its enqueue fn for the tools module
     QUEUE_MANAGER = QueueManager(QUEUE_DIR)
     log.info("Queue manager initialized at %s", QUEUE_DIR)
+    set_queue_enqueue_fn(QUEUE_MANAGER.enqueue)
 
     # Job handlers
     job_handlers = {
         "publish_ad": handle_publish_job,
     }
-    
-    # Job completion callback (will be set after app is created)
-    job_completion_callback = None
 
     app = Application.builder().token(token).build()
     
@@ -878,11 +910,7 @@ def main() -> None:
         job_id: str, chat_id: int, success: bool, message: str
     ) -> None:
         """Notify user about job completion."""
-        if success:
-            notification = f"✅ {message}"
-        else:
-            notification = f"❌ Fehler: {message}"
-        
+        notification = f"✅ {message}" if success else f"❌ Fehler: {message}"
         try:
             await app.bot.send_message(
                 chat_id,
@@ -895,7 +923,6 @@ def main() -> None:
                 job_id, chat_id, e,
             )
 
-    # Re-create worker with callback
     BACKGROUND_WORKER = BackgroundWorker(
         QUEUE_MANAGER,
         job_handlers,
@@ -926,6 +953,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_start, filters=user_filter))
     app.add_handler(CommandHandler("neu", cmd_neu, filters=user_filter))
     app.add_handler(CommandHandler("lunch", cmd_lunch, filters=user_filter))
+    app.add_handler(CommandHandler("plan", cmd_plan, filters=user_filter))
     app.add_handler(CommandHandler("queue", cmd_queue_status, filters=user_filter))
     app.add_handler(CommandHandler("backout", cmd_backout_jobs, filters=user_filter))
     app.add_handler(CommandHandler("retry", cmd_retry_job, filters=user_filter))
