@@ -12,6 +12,7 @@ import datetime
 import logging
 import os
 import re
+import tempfile
 import uuid
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -65,7 +66,7 @@ _DEFAULT_LUNCH_PLANNING_SKILL_CONTENT = """# Anpassbare Mittagessen-Regeln
 
 def _validate_skill_name(skill_name: str) -> str:
     normalized = (skill_name or "").strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", normalized):
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9_-]*[a-z0-9])?", normalized):
         raise ValueError("skill_name darf nur Kleinbuchstaben, Zahlen, '-' und '_' enthalten.")
     return normalized
 
@@ -108,11 +109,19 @@ def _ensure_skill_addon(skill_name: str) -> Path:
 
 
 def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Keep temporary files hidden so the external skill directory stays tidy.
-    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp_file = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        prefix=f".{path.name}.",
+        suffix=f".{uuid.uuid4().hex}.tmp",
+        dir=path.parent,
+        delete=False,
+    )
+    tmp_path = Path(tmp_file.name)
     try:
-        tmp_path.write_text(content, encoding="utf-8")
+        with tmp_file:
+            tmp_file.write(content)
         os.replace(tmp_path, path)
     except Exception:
         tmp_path.unlink(missing_ok=True)
