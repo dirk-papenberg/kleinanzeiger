@@ -6,10 +6,10 @@ allowed-tools: get_current_date get_skill_addon update_skill_addon get_recipes g
 
 ## Mittagessen-Planung
 
-Rufe bei jeder Mittagessen-Aufgabe zuerst get_skill_addon mit
-skill_name="lunch-planning" auf und befolge die dort geladenen Regeln. Diese
-Regeln liegen außerhalb des Container-Images und können dauerhaft angepasst
-werden.
+Rufe bei jeder Nutzeranfrage oder geplanten Aufgabe zur Mittagessen-Planung
+zuerst get_skill_addon mit skill_name="lunch-planning" auf und befolge die dort
+geladenen Regeln. Diese Regeln liegen außerhalb des Container-Images und können
+dauerhaft angepasst werden.
 
 Wenn der Nutzer eine dauerhafte Planungsregel oder Präferenz formuliert, speichere
 sie mit update_skill_addon für skill_name="lunch-planning" und bestätige kurz

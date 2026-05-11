@@ -110,6 +110,7 @@ def _ensure_skill_addon(skill_name: str) -> Path:
 
 def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.chmod(0o700)
     tmp_file = tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
