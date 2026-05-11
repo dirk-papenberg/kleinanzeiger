@@ -9,7 +9,8 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    KLEINANZEIGEN_SESSION_DIR=/home/appuser/.kleinanzeigen-agent/sessions
+    KLEINANZEIGEN_SESSION_DIR=/home/appuser/.kleinanzeigen-agent/sessions \
+    KLEINANZEIGEN_SKILL_ADDONS_DIR=/home/appuser/.kleinanzeigen-agent/skills
 
 # Run as non-root user (fixed UID so host volume permissions can be set to match)
 RUN useradd --create-home --shell /bin/false --uid 1001 appuser

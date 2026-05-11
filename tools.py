@@ -31,7 +31,7 @@ RECIPES_URL = os.environ.get(
     "LUNCH_RECIPES_URL",
     "http://ubuntu.fritz.box:880/resources/recipes",
 )
-DEFAULT_LUNCH_PLANNING_SKILL_MEMORY_PATH = "/data/skills/lunch-planning.md"
+_DEFAULT_SKILL_ADDONS_DIR = "~/.kleinanzeigen-agent/skills"
 _NO_ADDITIONAL_LUNCH_RULES = "Noch keine zusätzlichen Regeln."
 
 _DEFAULT_LUNCH_PLANNING_SKILL_CONTENT = """# Anpassbare Mittagessen-Regeln
@@ -63,20 +63,47 @@ _DEFAULT_LUNCH_PLANNING_SKILL_CONTENT = """# Anpassbare Mittagessen-Regeln
 """.replace("{NO_ADDITIONAL_LUNCH_RULES}", _NO_ADDITIONAL_LUNCH_RULES)
 
 
-def _lunch_planning_skill_memory_path() -> Path:
+def _validate_skill_name(skill_name: str) -> str:
+    normalized = (skill_name or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", normalized):
+        raise ValueError("skill_name darf nur Kleinbuchstaben, Zahlen, '-' und '_' enthalten.")
+    return normalized
+
+
+def _skill_addons_dir() -> Path:
     return Path(
         os.environ.get(
-            "LUNCH_PLANNING_SKILL_MEMORY_PATH",
-            DEFAULT_LUNCH_PLANNING_SKILL_MEMORY_PATH,
+            "KLEINANZEIGEN_SKILL_ADDONS_DIR",
+            _DEFAULT_SKILL_ADDONS_DIR,
         )
+    ).expanduser()
+
+
+def _skill_addon_path(skill_name: str) -> Path:
+    normalized = _validate_skill_name(skill_name)
+    if normalized == "lunch-planning":
+        legacy_path = os.environ.get("LUNCH_PLANNING_SKILL_MEMORY_PATH")
+        if legacy_path:
+            return Path(legacy_path).expanduser()
+    return _skill_addons_dir() / f"{normalized}.md"
+
+
+def _default_skill_addon_content(skill_name: str) -> str:
+    if skill_name == "lunch-planning":
+        return _DEFAULT_LUNCH_PLANNING_SKILL_CONTENT
+    return (
+        f"# Anpassbare Regeln für {skill_name}\n\n"
+        "## Nutzerregeln\n"
+        "- Noch keine zusätzlichen Regeln.\n"
     )
 
 
-def _ensure_lunch_planning_skill_memory() -> Path:
-    path = _lunch_planning_skill_memory_path()
+def _ensure_skill_addon(skill_name: str) -> Path:
+    normalized = _validate_skill_name(skill_name)
+    path = _skill_addon_path(normalized)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_DEFAULT_LUNCH_PLANNING_SKILL_CONTENT, encoding="utf-8")
+        path.write_text(_default_skill_addon_content(normalized), encoding="utf-8")
     return path
 
 
@@ -93,6 +120,7 @@ def _write_text_atomic(path: Path, content: str) -> None:
 
 
 def _normalize_rule_text(text: str) -> str:
+    # Strip Markdown list markers so semantically identical rules deduplicate.
     normalized = re.sub(r"^(?:[-*]\s*)+", "", text.strip())
     return " ".join(normalized.split()).casefold()
 
@@ -125,34 +153,21 @@ def get_current_date() -> dict:
     }
 
 
-@tool
-def get_lunch_planning_skill() -> str:
-    """Read the mutable lunch-planning skill text from the external data file.
-
-    Always call this before planning or announcing lunch, and before updating the
-    lunch-planning rules, so the latest persistent user preferences are included.
-    The file is stored outside the container image by default:
-    /data/skills/lunch-planning.md.
-    """
-    path = _ensure_lunch_planning_skill_memory()
+def _read_skill_addon(skill_name: str) -> str:
+    try:
+        path = _ensure_skill_addon(skill_name)
+    except ValueError as e:
+        return f"Fehler: {e}"
     return path.read_text(encoding="utf-8")
 
 
-@tool
-def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
-    """Edit the mutable lunch-planning skill text in the external data file.
+def _update_skill_addon(skill_name: str, content: str, mode: str = "append") -> str:
+    try:
+        normalized_skill = _validate_skill_name(skill_name)
+        path = _ensure_skill_addon(normalized_skill)
+    except ValueError as e:
+        return f"Fehler: {e}"
 
-    Use this when the user states a durable lunch-planning preference or rule,
-    for example "Bei Wochentagen sollten keine Rezepte geplant werden, die lange
-    dauern". Prefer mode="append" for new rules. Use mode="replace" only after
-    reading the current skill with get_lunch_planning_skill and preserving all
-    still-valid rules in the replacement content.
-
-    Args:
-        content: New rule text for append mode, or the full file content for replace mode.
-        mode: "append" to add a bullet under Nutzerregeln, or "replace" to rewrite the file.
-    """
-    path = _ensure_lunch_planning_skill_memory()
     normalized_mode = (mode or "append").strip().lower()
     normalized_content = (content or "").strip()
     if not normalized_content:
@@ -160,7 +175,7 @@ def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
 
     if normalized_mode == "replace":
         _write_text_atomic(path, normalized_content.rstrip() + "\n")
-        return f"Mittagessen-Regeln wurden ersetzt ({path})."
+        return f"Skill-Add-on für {normalized_skill} wurde ersetzt ({path})."
 
     if normalized_mode != "append":
         return "Fehler: mode muss 'append' oder 'replace' sein."
@@ -192,7 +207,53 @@ def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
         updated = f"{current}\n\n{marker}\n{bullet}\n"
 
     _write_text_atomic(path, updated)
-    return f"Mittagessen-Regel gespeichert ({path})."
+    return f"Skill-Add-on-Regel für {normalized_skill} gespeichert ({path})."
+
+
+@tool
+def get_skill_addon(skill_name: str) -> str:
+    """Read persistent add-on instructions for a skill.
+
+    Use this before working on a skill-specific task when durable user
+    preferences may apply. For example, call with skill_name="lunch-planning"
+    before lunch planning or skill_name="kleinanzeigen" before drafting ads.
+    """
+    return _read_skill_addon(skill_name)
+
+
+@tool
+def update_skill_addon(skill_name: str, content: str, mode: str = "append") -> str:
+    """Edit persistent add-on instructions for a skill.
+
+    Use this when the user states a durable preference or rule for any skill.
+    Prefer mode="append" for new rules. Use mode="replace" only after reading the
+    current add-on with get_skill_addon and preserving all still-valid rules in
+    the replacement content.
+
+    Args:
+        skill_name: Skill identifier, e.g. "lunch-planning" or "kleinanzeigen".
+        content: New rule text for append mode, or the full file content for replace mode.
+        mode: "append" to add a bullet under Nutzerregeln, or "replace" to rewrite the file.
+    """
+    return _update_skill_addon(skill_name, content, mode)
+
+
+@tool
+def get_lunch_planning_skill() -> str:
+    """Read the mutable lunch-planning skill add-on.
+
+    Compatibility wrapper for get_skill_addon("lunch-planning").
+    """
+    return _read_skill_addon("lunch-planning")
+
+
+@tool
+def update_lunch_planning_skill(content: str, mode: str = "append") -> str:
+    """Edit the mutable lunch-planning skill add-on.
+
+    Compatibility wrapper for update_skill_addon("lunch-planning", ...).
+    """
+    return _update_skill_addon("lunch-planning", content, mode)
 
 
 def _fetch_all_recipes() -> list[dict]:

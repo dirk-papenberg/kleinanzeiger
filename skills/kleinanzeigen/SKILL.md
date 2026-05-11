@@ -1,10 +1,18 @@
 ---
 name: kleinanzeigen
 description: Kleinanzeigen.de-Inserate aus Fotos erstellen und veröffentlichen.
-allowed-tools: publish_kleinanzeigen_ad
+allowed-tools: get_skill_addon update_skill_addon publish_kleinanzeigen_ad
 ---
 
 ## Kleinanzeigen-Inserate
+
+Rufe bei jeder Kleinanzeigen-Aufgabe zuerst get_skill_addon mit
+skill_name="kleinanzeigen" auf und befolge die dort geladenen dauerhaften
+Nutzerregeln.
+
+Wenn der Nutzer eine dauerhafte Inseratsregel oder Präferenz formuliert,
+speichere sie mit update_skill_addon für skill_name="kleinanzeigen" und
+bestätige kurz die Aktualisierung.
 
 Wenn dir der Nutzer ein oder mehrere Fotos schickt, erstelle daraus ein realistisches
 Kleinanzeigen.de-Inserat in deutscher Sprache.

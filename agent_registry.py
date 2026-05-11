@@ -23,11 +23,11 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager
 from skills import BASE_SYSTEM_PROMPT, build_skills_plugin
 from tools import (
     get_current_date,
-    get_lunch_planning_skill,
+    get_skill_addon,
     get_recipes,
     get_lunch_plan,
     save_lunch_plan,
-    update_lunch_planning_skill,
+    update_skill_addon,
     publish_kleinanzeigen_ad,
 )
 
@@ -39,11 +39,11 @@ SESSION_DIR = Path(
 
 _TOOLS = [
     get_current_date,
-    get_lunch_planning_skill,
+    get_skill_addon,
     get_recipes,
     get_lunch_plan,
     save_lunch_plan,
-    update_lunch_planning_skill,
+    update_skill_addon,
     publish_kleinanzeigen_ad,
 ]
 

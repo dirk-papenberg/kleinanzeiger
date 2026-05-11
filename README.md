@@ -69,8 +69,8 @@ KLEINANZEIGEN_QUEUE_DIR=~/.kleinanzeigen-agent/queue
 # Optional (mainly for local/non-compose runs)
 KLEINANZEIGEN_SESSION_DIR=~/.kleinanzeigen-agent/sessions
 
-# Optional: persisted lunch-planning skill memory (default: /data/skills/lunch-planning.md)
-LUNCH_PLANNING_SKILL_MEMORY_PATH=/data/skills/lunch-planning.md
+# Optional: persisted skill add-ons (Dockerfile default: /home/appuser/.kleinanzeigen-agent/skills)
+KLEINANZEIGEN_SKILL_ADDONS_DIR=~/.kleinanzeigen-agent/skills
 ```
 
 ### Running the Bot
@@ -197,8 +197,9 @@ To enable the "🚀 Direkt schalten" button:
 - **Ads**: `~/.kleinanzeigen-agent/ads/` (photos + ad.yaml files)
 - **Queue**: `~/.kleinanzeigen-agent/queue/` (job persistence)
 - **Sessions**: `~/.kleinanzeigen-agent/sessions/` (per-chat conversation history; with provided Docker Compose setup this stays inside the container and is reset when the container is recreated)
-- **Lunch planning skill memory**: `/data/skills/lunch-planning.md` by default.
-  The agent reads this external file before meal-planning tasks and can update it when you state durable rules.
+- **Skill add-ons**: `~/.kleinanzeigen-agent/skills/` by default locally and
+  `/home/appuser/.kleinanzeigen-agent/skills/` in the Docker image.
+  The agent reads external add-on files before skill-specific tasks and can update them when you state durable rules.
 
 ## Architecture
 
