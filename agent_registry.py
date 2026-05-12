@@ -21,15 +21,7 @@ from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from skills import BASE_SYSTEM_PROMPT, build_skills_plugin
-from tools import (
-    get_current_date,
-    get_skill_addon,
-    get_recipes,
-    get_lunch_plan,
-    save_lunch_plan,
-    update_skill_addon,
-    publish_kleinanzeigen_ad,
-)
+from tools import get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad
 
 log = logging.getLogger("kleinanzeigen-agent.registry")
 
@@ -37,15 +29,7 @@ SESSION_DIR = Path(
     os.environ.get("KLEINANZEIGEN_SESSION_DIR", "/data/sessions")
 )
 
-_TOOLS = [
-    get_current_date,
-    get_skill_addon,
-    get_recipes,
-    get_lunch_plan,
-    save_lunch_plan,
-    update_skill_addon,
-    publish_kleinanzeigen_ad,
-]
+_TOOLS = [get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad]
 
 # chat_id -> Agent
 _agents: dict[int, Agent] = {}
