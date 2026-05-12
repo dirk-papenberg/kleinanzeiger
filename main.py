@@ -367,7 +367,7 @@ async def _call_agent(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
-NO_RECIPE_PLAN_WEEKDAYS = {1, 5, 6}  # Tuesday (Mama cooks), Saturday, Sunday
+NO_RECIPE_PLAN_WEEKDAYS = {1, 5, 6}  # datetime.weekday(): Tuesday, Saturday, Sunday
 
 
 def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
@@ -467,21 +467,33 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
     tomorrow = today + datetime.timedelta(days=1)
+    if today.weekday() <= 4:
+        plan_check_end = today + datetime.timedelta(days=4 - today.weekday())
+    else:
+        plan_check_end = tomorrow
     log.info("Sending lunch plan for %s to %d user(s)", today, len(ALLOWED_USER_IDS))
 
     try:
-        plan_range = await _fetch_lunch_plan_range(today, tomorrow)
+        plan_range = await _fetch_lunch_plan_range(today, plan_check_end)
     except Exception as e:
         log.error("Failed to fetch lunch plan: %s", e)
         return
 
     today_msg = format_lunch_message(plan_range, today)
-    today_has_meal = _has_meal(plan_range, today)
     tomorrow_has_meal = _has_meal(plan_range, tomorrow)
-    current_week_needs_plan = (
-        _needs_recipe_plan(today, today_has_meal)
-        or _needs_recipe_plan(tomorrow, tomorrow_has_meal)
+    current_week_dates = (
+        [
+            today + datetime.timedelta(days=offset)
+            for offset in range((plan_check_end - today).days + 1)
+        ]
+        if today.weekday() <= 4
+        else []
     )
+    current_week_needs_plan = any(
+        _needs_recipe_plan(day, _has_meal(plan_range, day))
+        for day in current_week_dates
+    )
+    next_week_needs_plan = today.weekday() >= 4 and not tomorrow_has_meal
 
     for user_id in ALLOWED_USER_IDS:
         try:
@@ -494,7 +506,7 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if current_week_needs_plan:
             await _trigger_week_plan(user_id, today, context, current_week=True)
-        elif not tomorrow_has_meal:
+        elif next_week_needs_plan:
             await _trigger_week_plan(user_id, today, context)
 
 
