@@ -367,7 +367,7 @@ async def _call_agent(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
-WEEKDAYS_WITHOUT_RECIPE_PLAN = {1, 5, 6}  # datetime.weekday(): Tuesday, Saturday, Sunday
+WEEKDAYS_WITHOUT_RECIPE_PLAN = {1, 5, 6}  # datetime.weekday(): 1=Tuesday, 5=Saturday, 6=Sunday
 
 
 def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
@@ -377,12 +377,16 @@ def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
 def _current_week_dates(
     today: datetime.date, plan_check_end: datetime.date
 ) -> list[datetime.date]:
-    if today.weekday() > 4:
+    if today.weekday() >= 5:
         return []
     return [
         today + datetime.timedelta(days=offset)
         for offset in range((plan_check_end - today).days + 1)
     ]
+
+
+def _should_suggest_next_week(today: datetime.date, tomorrow_has_meal: bool) -> bool:
+    return today.weekday() in {4, 5, 6} and not tomorrow_has_meal
 
 
 async def _fetch_lunch_plan_range(
@@ -500,7 +504,7 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
         _needs_recipe_plan(day, day.isoformat() in dates_with_meals)
         for day in current_week_dates
     )
-    next_week_needs_plan = today.weekday() >= 4 and not tomorrow_has_meal
+    next_week_needs_plan = _should_suggest_next_week(today, tomorrow_has_meal)
 
     for user_id in ALLOWED_USER_IDS:
         try:
