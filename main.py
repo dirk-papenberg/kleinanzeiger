@@ -367,11 +367,22 @@ async def _call_agent(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
-NO_RECIPE_PLAN_WEEKDAYS = {1, 5, 6}  # datetime.weekday(): Tuesday, Saturday, Sunday
+WEEKDAYS_WITHOUT_RECIPE_PLAN = {1, 5, 6}  # datetime.weekday(): Tuesday, Saturday, Sunday
 
 
 def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
-    return date.weekday() not in NO_RECIPE_PLAN_WEEKDAYS and not has_meal
+    return date.weekday() not in WEEKDAYS_WITHOUT_RECIPE_PLAN and not has_meal
+
+
+def _current_week_dates(
+    today: datetime.date, plan_check_end: datetime.date
+) -> list[datetime.date]:
+    if today.weekday() > 4:
+        return []
+    return [
+        today + datetime.timedelta(days=offset)
+        for offset in range((plan_check_end - today).days + 1)
+    ]
 
 
 async def _fetch_lunch_plan_range(
@@ -480,17 +491,13 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     today_msg = format_lunch_message(plan_range, today)
-    tomorrow_has_meal = _has_meal(plan_range, tomorrow)
-    current_week_dates = (
-        [
-            today + datetime.timedelta(days=offset)
-            for offset in range((plan_check_end - today).days + 1)
-        ]
-        if today.weekday() <= 4
-        else []
-    )
+    dates_with_meals = {
+        entry.get("date") for entry in plan_range if entry.get("recipes")
+    }
+    tomorrow_has_meal = tomorrow.isoformat() in dates_with_meals
+    current_week_dates = _current_week_dates(today, plan_check_end)
     current_week_needs_plan = any(
-        _needs_recipe_plan(day, _has_meal(plan_range, day))
+        _needs_recipe_plan(day, day.isoformat() in dates_with_meals)
         for day in current_week_dates
     )
     next_week_needs_plan = today.weekday() >= 4 and not tomorrow_has_meal
