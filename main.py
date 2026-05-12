@@ -368,7 +368,12 @@ async def _call_agent(
 # ---------------------------------------------------------------------------
 
 # datetime.weekday(): Monday=0, so 1=Tuesday, 5=Saturday, 6=Sunday.
-WEEKDAYS_WITHOUT_RECIPE_PLAN = {1, 5, 6}
+TUESDAY = 1
+FRIDAY = 4
+SATURDAY = 5
+SUNDAY = 6
+WEEKDAYS_WITHOUT_RECIPE_PLAN = {TUESDAY, SATURDAY, SUNDAY}
+WEEKDAYS_FOR_NEXT_WEEK_SUGGESTION = {FRIDAY, SATURDAY, SUNDAY}
 
 
 def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
@@ -378,7 +383,7 @@ def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
 def _current_week_dates(
     today: datetime.date, plan_check_end: datetime.date
 ) -> list[datetime.date]:
-    if today.weekday() >= 5:
+    if today.weekday() >= SATURDAY:
         return []
     return [
         today + datetime.timedelta(days=offset)
@@ -387,7 +392,7 @@ def _current_week_dates(
 
 
 def _should_suggest_next_week(today: datetime.date, tomorrow_has_meal: bool) -> bool:
-    return today.weekday() in {4, 5, 6} and not tomorrow_has_meal
+    return today.weekday() in WEEKDAYS_FOR_NEXT_WEEK_SUGGESTION and not tomorrow_has_meal
 
 
 async def _fetch_lunch_plan_range(
@@ -483,8 +488,8 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
     tomorrow = today + datetime.timedelta(days=1)
-    if today.weekday() <= 4:
-        plan_check_end = today + datetime.timedelta(days=4 - today.weekday())
+    if today.weekday() <= FRIDAY:
+        plan_check_end = today + datetime.timedelta(days=FRIDAY - today.weekday())
     else:
         plan_check_end = tomorrow
     log.info("Sending lunch plan for %s to %d user(s)", today, len(ALLOWED_USER_IDS))
