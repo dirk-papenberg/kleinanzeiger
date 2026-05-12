@@ -472,6 +472,34 @@ async def _call_agent_streaming(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
+# datetime.weekday(): Monday=0, so 1=Tuesday, 5=Saturday, 6=Sunday.
+TUESDAY = 1
+FRIDAY = 4
+SATURDAY = 5
+SUNDAY = 6
+WEEKDAYS_WITHOUT_RECIPE_PLAN = {TUESDAY, SATURDAY, SUNDAY}
+WEEKDAYS_FOR_NEXT_WEEK_SUGGESTION = {FRIDAY, SATURDAY, SUNDAY}
+
+
+def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
+    return date.weekday() not in WEEKDAYS_WITHOUT_RECIPE_PLAN and not has_meal
+
+
+def _current_week_dates(
+    today: datetime.date, plan_check_end: datetime.date
+) -> list[datetime.date]:
+    if today.weekday() >= SATURDAY:
+        return []
+    return [
+        today + datetime.timedelta(days=offset)
+        for offset in range((plan_check_end - today).days + 1)
+    ]
+
+
+def _should_suggest_next_week(today: datetime.date, tomorrow_has_meal: bool) -> bool:
+    return today.weekday() in WEEKDAYS_FOR_NEXT_WEEK_SUGGESTION and not tomorrow_has_meal
+
+
 async def _fetch_lunch_plan_range(
     start: datetime.date, end: datetime.date
 ) -> list[dict]:
@@ -519,16 +547,25 @@ async def _trigger_week_plan(
     user_id: int,
     today: datetime.date,
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    current_week: bool = False,
 ) -> None:
-    """Ask the agent to propose a meal plan for the coming week and present it."""
-    days_until_monday = (7 - today.weekday()) % 7 or 7
-    next_monday = today + datetime.timedelta(days=days_until_monday)
-    next_friday = next_monday + datetime.timedelta(days=4)
+    """Ask the agent to propose a meal plan for a week and present it."""
+    if current_week and today.weekday() <= 4:
+        week_start = today
+        week_friday = today + datetime.timedelta(days=4 - today.weekday())
+        week_label = "die aktuelle Woche"
+    else:
+        days_until_monday = (7 - today.weekday()) % 7 or 7
+        week_start = today + datetime.timedelta(days=days_until_monday)
+        week_friday = week_start + datetime.timedelta(days=4)
+        week_label = "die nächste Woche"
 
     trigger = (
-        f"Heute ist {today.isoformat()}. Für {next_monday.isoformat()} bis "
-        f"{next_friday.isoformat()} fehlt noch ein Mittagessen-Plan. "
-        "Bitte erstelle einen Vorschlag für die fehlenden Tage. "
+        f"Heute ist {today.isoformat()}. Für {week_label} von "
+        f"{week_start.isoformat()} bis {week_friday.isoformat()} fehlt noch "
+        "ein Mittagessen-Plan. Bitte erstelle einen Vorschlag nur für die "
+        "fehlenden Tage in diesem Zeitraum. "
         "Zeige den Vorschlag als übersichtliche Liste (Datum + Gericht)."
     )
     try:
@@ -541,7 +578,7 @@ async def _trigger_week_plan(
         PENDING_LUNCH_PLAN.add(user_id)
         log.info(
             "[chat=%d] Lunch plan suggestion sent for %s–%s",
-            user_id, next_monday, next_friday,
+            user_id, week_start, week_friday,
         )
     except Exception as e:
         log.error("[chat=%d] Failed to send lunch plan suggestion: %s", user_id, e)
@@ -550,20 +587,36 @@ async def _trigger_week_plan(
 async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     """JobQueue callback: send today's lunch plan at 08:30.
 
-    If tomorrow has no meal planned, proactively trigger a week plan suggestion.
+    If a relevant day has no meal planned, proactively trigger a week plan suggestion.
     """
     today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
     tomorrow = today + datetime.timedelta(days=1)
+    if today.weekday() <= FRIDAY:
+        plan_check_end = today + datetime.timedelta(days=FRIDAY - today.weekday())
+    else:
+        plan_check_end = tomorrow
     log.info("Sending lunch plan for %s to %d user(s)", today, len(ALLOWED_USER_IDS))
 
     try:
-        plan_range = await _fetch_lunch_plan_range(today, tomorrow)
+        plan_range = await _fetch_lunch_plan_range(today, plan_check_end)
     except Exception as e:
         log.error("Failed to fetch lunch plan: %s", e)
         return
 
     today_msg = format_lunch_message(plan_range, today)
-    tomorrow_has_meal = _has_meal(plan_range, tomorrow)
+    dates_with_meals = {
+        entry.get("date") for entry in plan_range if entry.get("recipes")
+    }
+    tomorrow_has_meal = tomorrow.isoformat() in dates_with_meals
+    current_week_dates = _current_week_dates(today, plan_check_end)
+    current_week_date_by_iso = {
+        day.isoformat(): day for day in current_week_dates
+    }
+    current_week_needs_plan = any(
+        _needs_recipe_plan(day, date_str in dates_with_meals)
+        for date_str, day in current_week_date_by_iso.items()
+    )
+    next_week_needs_plan = _should_suggest_next_week(today, tomorrow_has_meal)
 
     for user_id in ALLOWED_USER_IDS:
         try:
@@ -574,7 +627,9 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
             log.error("Failed to send today's lunch to user %d: %s", user_id, e)
             continue
 
-        if not tomorrow_has_meal:
+        if current_week_needs_plan:
+            await _trigger_week_plan(user_id, today, context, current_week=True)
+        elif next_week_needs_plan:
             await _trigger_week_plan(user_id, today, context)
 
 
