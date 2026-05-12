@@ -6,6 +6,7 @@ A Telegram bot that turns photos into Kleinanzeigen.de ad drafts using Claude Vi
 
 - **AI-Powered Draft Generation**: Send photos and Claude analyzes them to create realistic ad listings
 - **Smart Editing**: Edit drafts with natural language ("raise price to 30 EUR", "make description shorter")
+- **Streaming Text Responses**: General chat and lunch-planning responses are streamed by updating the Telegram message while Claude is still generating
 - **Immediate Feedback**: Users get instant acknowledgment when sending photos
 - **Background Processing**: Ad publishing runs in a background queue - no waiting!
 - **Session Management**: After queuing a job, the session resets so you can prepare your next ad
