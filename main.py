@@ -367,6 +367,9 @@ async def _call_agent(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
+NO_RECIPE_PLAN_WEEKDAYS = {1, 5, 6}  # Tuesday (Mama cooks), Saturday, Sunday
+
+
 async def _fetch_lunch_plan_range(
     start: datetime.date, end: datetime.date
 ) -> list[dict]:
@@ -472,8 +475,11 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     today_has_meal = _has_meal(plan_range, today)
     tomorrow_has_meal = _has_meal(plan_range, tomorrow)
     current_week_needs_plan = (
-        (today.weekday() not in (1, 5, 6) and not today_has_meal)
-        or (tomorrow.weekday() not in (1, 5, 6) and not tomorrow_has_meal)
+        (today.weekday() not in NO_RECIPE_PLAN_WEEKDAYS and not today_has_meal)
+        or (
+            tomorrow.weekday() not in NO_RECIPE_PLAN_WEEKDAYS
+            and not tomorrow_has_meal
+        )
     )
 
     for user_id in ALLOWED_USER_IDS:
