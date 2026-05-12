@@ -370,6 +370,10 @@ async def _call_agent(
 NO_RECIPE_PLAN_WEEKDAYS = {1, 5, 6}  # Tuesday (Mama cooks), Saturday, Sunday
 
 
+def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
+    return date.weekday() not in NO_RECIPE_PLAN_WEEKDAYS and not has_meal
+
+
 async def _fetch_lunch_plan_range(
     start: datetime.date, end: datetime.date
 ) -> list[dict]:
@@ -459,7 +463,7 @@ async def _trigger_week_plan(
 async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     """JobQueue callback: send today's lunch plan at 08:30.
 
-    If tomorrow has no meal planned, proactively trigger a week plan suggestion.
+    If a relevant day has no meal planned, proactively trigger a week plan suggestion.
     """
     today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
     tomorrow = today + datetime.timedelta(days=1)
@@ -475,11 +479,8 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     today_has_meal = _has_meal(plan_range, today)
     tomorrow_has_meal = _has_meal(plan_range, tomorrow)
     current_week_needs_plan = (
-        (today.weekday() not in NO_RECIPE_PLAN_WEEKDAYS and not today_has_meal)
-        or (
-            tomorrow.weekday() not in NO_RECIPE_PLAN_WEEKDAYS
-            and not tomorrow_has_meal
-        )
+        _needs_recipe_plan(today, today_has_meal)
+        or _needs_recipe_plan(tomorrow, tomorrow_has_meal)
     )
 
     for user_id in ALLOWED_USER_IDS:
