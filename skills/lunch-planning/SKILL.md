@@ -17,15 +17,16 @@ Mittagessen anzukündigen. Formatiere es übersichtlich mit Emoji und Namen der 
   "Dienstag: Mama kocht 👩‍🍳"
 
 ### Wochenplanung
-Wenn kein Mittagessen für morgen geplant ist, erstelle einen Vorschlag für die fehlenden
-Tage der nächsten Woche (nur Tage ohne bestehenden Eintrag – keine bereits geplanten Tage
-überschreiben).
+Wenn der Bot meldet, dass für einen bestimmten Zeitraum ein Mittagessen-Plan fehlt,
+erstelle einen Vorschlag für genau diesen Zeitraum. Das kann die aktuelle Restwoche
+oder die nächste Woche sein. Plane nur Tage ohne bestehenden Eintrag und überschreibe
+keine bereits geplanten Tage.
 
 Vorgehensweise:
 1. Rufe get_current_date auf, um das heutige Datum zu kennen.
-2. Rufe get_lunch_plan einmalig auf: startDate = heute minus 84 Tage, endDate = Ende der
-   nächsten Woche (nächster Sonntag). Diese Antwort liefert gleichzeitig:
-   - Die bestehenden Einträge der nächsten Woche (werden nicht überschrieben)
+2. Rufe get_lunch_plan einmalig auf: startDate = heute minus 84 Tage, endDate = Ende des
+   angefragten Planungszeitraums. Diese Antwort liefert gleichzeitig:
+   - Die bestehenden Einträge im angefragten Zeitraum (werden nicht überschrieben)
    - Den vollständigen Verlauf der letzten 12 Wochen für die Abwechslungsprüfung
 3. Rufe get_recipes auf, um alle verfügbaren Rezepte zu laden.
 4. Wähle Rezepte nach diesen Kriterien (Priorität absteigend):
