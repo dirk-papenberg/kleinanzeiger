@@ -367,7 +367,8 @@ async def _call_agent(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
-WEEKDAYS_WITHOUT_RECIPE_PLAN = {1, 5, 6}  # datetime.weekday(): 1=Tuesday, 5=Saturday, 6=Sunday
+# datetime.weekday(): Monday=0, so 1=Tuesday, 5=Saturday, 6=Sunday.
+WEEKDAYS_WITHOUT_RECIPE_PLAN = {1, 5, 6}
 
 
 def _needs_recipe_plan(date: datetime.date, has_meal: bool) -> bool:
@@ -500,9 +501,12 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
     }
     tomorrow_has_meal = tomorrow.isoformat() in dates_with_meals
     current_week_dates = _current_week_dates(today, plan_check_end)
+    current_week_date_by_iso = {
+        day.isoformat(): day for day in current_week_dates
+    }
     current_week_needs_plan = any(
-        _needs_recipe_plan(day, day.isoformat() in dates_with_meals)
-        for day in current_week_dates
+        _needs_recipe_plan(day, date_str in dates_with_meals)
+        for date_str, day in current_week_date_by_iso.items()
     )
     next_week_needs_plan = _should_suggest_next_week(today, tomorrow_has_meal)
 
