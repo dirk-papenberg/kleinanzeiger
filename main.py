@@ -253,7 +253,7 @@ async def run_kleinanzeigen_bot(chat_id: int, *, ads_filter: str = "new") -> tup
           username: "user@example.com"
           password: "secret"
         ad_files:
-          - "ads/*/ad.yaml"
+          - "ads/*/*.yaml"
         browser:
           arguments:
             - --no-sandbox
@@ -349,7 +349,7 @@ def _list_user_ads(chat_id: int) -> list[dict]:
     if not work_dir.exists():
         return []
     ads = []
-    for ad_yaml in sorted(work_dir.glob("*/ad.yaml")):
+    for ad_yaml in sorted(work_dir.glob("*/*.yaml")):
         try:
             text = ad_yaml.read_text(encoding="utf-8")
         except OSError:

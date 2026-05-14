@@ -53,7 +53,7 @@ def _list_ads_internal(chat_id: int) -> list[dict]:
     if not work_dir.is_dir():
         return []
     ads = []
-    for idx, ad_yaml in enumerate(sorted(work_dir.glob("*/ad.yaml"))):
+    for idx, ad_yaml in enumerate(sorted(work_dir.glob("*/*.yaml"))):
         try:
             data = yaml.safe_load(ad_yaml.read_text(encoding="utf-8")) or {}
         except Exception:
