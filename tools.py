@@ -42,7 +42,7 @@ def _base_dir() -> Path:
     return Path(
         os.environ.get(
             "KLEINANZEIGEN_BASE_DIR",
-            str(Path.home() / ".kleinanzeigen-agent"),
+            "/docker-volumes/kleinanzeiger/kleinanzeigen-config",
         )
     )
 

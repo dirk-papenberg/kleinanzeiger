@@ -26,7 +26,7 @@ from tools import get_current_date, get_recipes, get_lunch_plan, save_lunch_plan
 log = logging.getLogger("kleinanzeigen-agent.registry")
 
 SESSION_DIR = Path(
-    os.environ.get("KLEINANZEIGEN_SESSION_DIR", "/data/sessions")
+    os.environ.get("KLEINANZEIGEN_SESSION_DIR", "/docker-volumes/kleinanzeiger/sessions")
 )
 
 _TOOLS = [get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad, list_kleinanzeigen_ads, delete_kleinanzeigen_ad, deactivate_kleinanzeigen_ad]

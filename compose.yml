@@ -16,5 +16,7 @@ services:
     security_opt:
       - seccomp:unconfined
     volumes:
-      # persistent work/queue dirs and config survive container restarts
-      - /opt/kleinanzeigen-agent/data:/data
+      # per-user kleinanzeigen config dirs (config.yaml + ads/)
+      - /docker-volumes/kleinanzeiger/kleinanzeigen-config:/docker-volumes/kleinanzeiger/kleinanzeigen-config
+      # agent conversation session history
+      - /docker-volumes/kleinanzeiger/sessions:/docker-volumes/kleinanzeiger/sessions

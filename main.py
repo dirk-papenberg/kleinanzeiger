@@ -55,7 +55,7 @@ KLEINANZEIGEN_BOT_CMD = os.environ.get("KLEINANZEIGEN_BOT_CMD", "")
 KLEINANZEIGEN_BASE_DIR = Path(
     os.environ.get(
         "KLEINANZEIGEN_BASE_DIR",
-        str(Path.home() / ".kleinanzeigen-agent"),
+        "/docker-volumes/kleinanzeiger/kleinanzeigen-config",
     )
 )
 
@@ -78,7 +78,7 @@ KLEINANZEIGEN_REPUBLISH_TIME = datetime.time(
 QUEUE_DIR = Path(
     os.environ.get(
         "KLEINANZEIGEN_QUEUE_DIR",
-        str(Path.home() / ".kleinanzeigen-agent" / "queue"),
+        "/docker-volumes/kleinanzeiger/kleinanzeigen-config/queue",
     )
 )
 LUNCH_PLAN_BASE_URL = os.environ.get(
