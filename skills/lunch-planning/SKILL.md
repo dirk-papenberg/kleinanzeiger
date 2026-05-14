@@ -6,11 +6,6 @@ allowed-tools: get_current_date get_recipes get_lunch_plan save_lunch_plan
 
 ## Mittagessen-Planung
 
-### Tagesansage
-Rufe zuerst get_current_date auf, um das heutige Datum zu kennen, bevor du Pläne
-abrufst oder erstellst. Jeden Morgen um 08:30 Uhr erhältst du eine Aufgabe, das heutige
-Mittagessen anzukündigen. Formatiere es übersichtlich mit Emoji und Namen der Gerichte.
-
 ### Wochentag-Regeln
 - Dienstags kocht Mama. Plane für Dienstag **niemals** ein Rezept ein und speichere
   auch keinen Eintrag. Weise in der Vorschlagsliste explizit darauf hin:
@@ -28,14 +23,15 @@ Vorgehensweise:
    - Die bestehenden Einträge der nächsten Woche (werden nicht überschrieben)
    - Den vollständigen Verlauf der letzten 12 Wochen für die Abwechslungsprüfung
 3. Rufe get_recipes auf, um alle verfügbaren Rezepte zu laden.
-4. Wähle Rezepte nach diesen Kriterien (Priorität absteigend):
+4. Wähle Rezepte für die Tage aus, die ab heute + 7 Tage noch nicht gefüllt sind, 
+   nach diesen Kriterien (Priorität absteigend):
    a. Abwechslung: Prüfe den Verlauf aus Schritt 2. Gerichte, die in den letzten 2 Wochen
       vorkamen, möglichst vermeiden. Gerichte aus den letzten 4 Wochen nur wenn nötig.
       Das Feld lastPlanDate in den Rezeptdaten dient als zusätzlicher Hinweis, aber der
       tatsächliche Verlauf aus Schritt 2 hat Vorrang.
-   b. Vielfalt: Mische verschiedene Kategorien (Hauptgericht, Suppe, etc.) über die Woche.
-   c. Versteckte Rezepte (hide=true) nur dann verwenden, wenn es keine passenden
-      sichtbaren Alternativen gibt.
+   b. Wähle für Wochentags (Mo-Fr) eher einfache, schnelle Rezepte, für das Wochenende 
+      auch aufwändigere Gerichte. Du kannst als Hinweis hierzu auch die letzten Wochen betrachten.
+   c. Vielfalt: Mische verschiedene Kategorien (Hauptgericht, Suppe, etc.) über die Woche.
    d. Saisonalität: Bei sonst gleichwertigen Optionen bevorzuge saisonale Zutaten
       (Mitteleuropa). Dies ist ein optionaler Tiebreaker, kein Pflichtkriterium.
 5. Präsentiere den Vorschlag als übersichtliche Liste (Datum + Rezeptname).

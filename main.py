@@ -517,19 +517,12 @@ def format_lunch_message(plan_entries: list[dict], date: datetime.date) -> str:
 
 async def _trigger_week_plan(
     user_id: int,
-    today: datetime.date,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """Ask the agent to propose a meal plan for the coming week and present it."""
-    days_until_monday = (7 - today.weekday()) % 7 or 7
-    next_monday = today + datetime.timedelta(days=days_until_monday)
-    next_friday = next_monday + datetime.timedelta(days=4)
 
     trigger = (
-        f"Heute ist {today.isoformat()}. Für {next_monday.isoformat()} bis "
-        f"{next_friday.isoformat()} fehlt noch ein Mittagessen-Plan. "
-        "Bitte erstelle einen Vorschlag für die fehlenden Tage. "
-        "Zeige den Vorschlag als übersichtliche Liste (Datum + Gericht)."
+        "Bitte erstelle einen Vorschlag für das Mittagessen. "
     )
     try:
         await _call_agent_streaming(
@@ -540,8 +533,8 @@ async def _trigger_week_plan(
         )
         PENDING_LUNCH_PLAN.add(user_id)
         log.info(
-            "[chat=%d] Lunch plan suggestion sent for %s–%s",
-            user_id, next_monday, next_friday,
+            "[chat=%d] Lunch plan suggestion sent.",
+            user_id
         )
     except Exception as e:
         log.error("[chat=%d] Failed to send lunch plan suggestion: %s", user_id, e)
@@ -575,7 +568,7 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
             continue
 
         if not tomorrow_has_meal:
-            await _trigger_week_plan(user_id, today, context)
+            await _trigger_week_plan(user_id, context)
 
 
 async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -627,9 +620,8 @@ async def cmd_lunch(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manually trigger a lunch plan suggestion for next week via /plan."""
     chat_id = update.effective_chat.id
-    today = datetime.datetime.now(LUNCH_PLAN_TZ).date()
     await update.message.reply_text("🤔 Erstelle Essensplan-Vorschlag…")
-    await _trigger_week_plan(chat_id, today, context)
+    await _trigger_week_plan(chat_id, context)
 
 
 async def cmd_queue_status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
