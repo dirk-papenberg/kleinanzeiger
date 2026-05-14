@@ -34,7 +34,7 @@ Vorgehensweise:
    c. Vielfalt: Mische verschiedene Kategorien (Hauptgericht, Suppe, etc.) über die Woche.
    d. Saisonalität: Bei sonst gleichwertigen Optionen bevorzuge saisonale Zutaten
       (Mitteleuropa). Dies ist ein optionaler Tiebreaker, kein Pflichtkriterium.
-5. Präsentiere den Vorschlag als übersichtliche Liste (Datum + Rezeptname).
+5. Präsentiere den Vorschlag als übersichtliche Liste (Tag + Rezeptname).
 6. Warte auf Bestätigung des Nutzers, bevor du speicherst.
    Speichere NIEMALS ohne explizite Bestätigung ("Annehmen", "Ja", "OK", "Speichern").
 
