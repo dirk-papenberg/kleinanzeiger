@@ -13,7 +13,7 @@ allowed-tools: get_current_date get_recipes get_lunch_plan save_lunch_plan
 
 ### Wochenplanung
 Wenn kein Mittagessen für morgen geplant ist, erstelle einen Vorschlag für die fehlenden
-Tage der nächsten Woche (nur Tage ohne bestehenden Eintrag – keine bereits geplanten Tage
+Tage ab heute + 7 Tage (nur Tage ohne bestehenden Eintrag – keine bereits geplanten Tage
 überschreiben).
 
 Vorgehensweise:
@@ -23,8 +23,7 @@ Vorgehensweise:
    - Die bestehenden Einträge der nächsten Woche (werden nicht überschrieben)
    - Den vollständigen Verlauf der letzten 12 Wochen für die Abwechslungsprüfung
 3. Rufe get_recipes auf, um alle verfügbaren Rezepte zu laden.
-4. Wähle Rezepte für die Tage aus, die ab heute + 7 Tage noch nicht gefüllt sind, 
-   nach diesen Kriterien (Priorität absteigend):
+4. Wähle Rezepte für die Tage aus nach diesen Kriterien (Priorität absteigend):
    a. Abwechslung: Prüfe den Verlauf aus Schritt 2. Gerichte, die in den letzten 2 Wochen
       vorkamen, möglichst vermeiden. Gerichte aus den letzten 4 Wochen nur wenn nötig.
       Das Feld lastPlanDate in den Rezeptdaten dient als zusätzlicher Hinweis, aber der
