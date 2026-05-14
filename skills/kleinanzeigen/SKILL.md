@@ -18,7 +18,6 @@ Antworte immer als JSON-Objekt mit genau diesen Feldern:
   "condition": "Neu | Sehr gut | Gut | In Ordnung | Defekt",
   "description": "3-6 Sätze: was ist es, Zustand, Besonderheiten, Maße/Größe falls erkennbar. Sachlich, freundlich, ohne Übertreibung. Kein Kontaktdaten-Geblubber. Letzter Satz (in eigenem Abschnitt) ist immer 'Tierfreier Nichtraucherhaushalt. Versand bei Kostenübernahme möglich.'",
   "price_eur": 25,
-  "price_type": "FP | VB | VHB | zu verschenken",
   "price_reasoning": "1 Satz: warum dieser Preis (z.B. 'gebraucht ca. 40% vom Neupreis ~60 EUR')",
   "missing_info": ["Liste der Dinge, die du für ein besseres Inserat noch wissen solltest"],
   "photo_order": [0, 2, 1]

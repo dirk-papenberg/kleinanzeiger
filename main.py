@@ -52,24 +52,28 @@ STREAM_EDIT_MIN_CHARS = 80
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 KLEINANZEIGEN_BOT_CMD = os.environ.get("KLEINANZEIGEN_BOT_CMD", "")
-KLEINANZEIGEN_CONFIG = os.environ.get(
-    "KLEINANZEIGEN_CONFIG",
-    str(Path.home() / ".kleinanzeigen-agent" / "config.yaml"),
-)
-WORK_DIR = Path(
+KLEINANZEIGEN_BASE_DIR = Path(
     os.environ.get(
-        "KLEINANZEIGEN_WORK_DIR",
-        str(Path.home() / ".kleinanzeigen-agent" / "ads"),
+        "KLEINANZEIGEN_BASE_DIR",
+        str(Path.home() / ".kleinanzeigen-agent"),
     )
 )
+
+
+def _user_config_path(chat_id: int) -> Path:
+    """Return the persistent config.yaml path for a given Telegram chat user."""
+    return KLEINANZEIGEN_BASE_DIR / str(chat_id) / "config.yaml"
+
+
+def _user_work_dir(chat_id: int) -> Path:
+    """Return the ads working directory for a given Telegram chat user."""
+    return KLEINANZEIGEN_BASE_DIR / str(chat_id) / "ads"
 QUEUE_DIR = Path(
     os.environ.get(
         "KLEINANZEIGEN_QUEUE_DIR",
         str(Path.home() / ".kleinanzeigen-agent" / "queue"),
     )
 )
-DEFAULT_SHIPPING_TYPE = os.environ.get("KLEINANZEIGEN_SHIPPING", "SHIPPING").upper()
-
 LUNCH_PLAN_BASE_URL = os.environ.get(
     "LUNCH_PLAN_URL",
     "http://ubuntu.fritz.box:880/resources/plan",
@@ -101,7 +105,6 @@ class Draft:
     condition: str = ""
     description: str = ""
     price_eur: int = 0
-    price_type: str = "VB"
     price_reasoning: str = ""
     missing_info: list[str] = field(default_factory=list)
 
@@ -120,22 +123,12 @@ PENDING_LUNCH_PLAN: set[int] = set()
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _price_type_to_bot(s: str) -> str:
-    s = (s or "").strip().upper()
-    if s in ("FP", "FESTPREIS", "FIXED"):
-        return "FIXED"
-    if s in ("ZU VERSCHENKEN", "GIVE_AWAY", "GIVEAWAY", "VERSCHENKEN"):
-        return "GIVE_AWAY"
-    return "NEGOTIABLE"  # VB, VHB, default
-
-
 def _apply_dict_to_draft(d: Draft, data: dict) -> None:
     d.title = str(data.get("title", d.title))[:65]
     d.category = str(data.get("category", d.category))
     d.condition = str(data.get("condition", d.condition))
     d.description = str(data.get("description", d.description))
     d.price_eur = int(data.get("price_eur", d.price_eur) or 0)
-    d.price_type = str(data.get("price_type", d.price_type))
     d.price_reasoning = str(data.get("price_reasoning", d.price_reasoning))
     d.missing_info = list(data.get("missing_info", d.missing_info) or [])
 
@@ -153,7 +146,7 @@ def render_draft(d: Draft) -> str:
         f"*{escape_md(d.title)}*\n"
         f"_{escape_md(d.category)} · {escape_md(d.condition)}_\n\n"
         f"{escape_md(d.description)}\n\n"
-        f"*Preis:* {d.price_eur} EUR {escape_md(d.price_type)}\n"
+        f"*Preis:* {d.price_eur} EUR\n"
         f"_{escape_md(d.price_reasoning)}_"
         f"{missing}"
     )
@@ -165,7 +158,7 @@ def render_final(d: Draft) -> str:
         "```\n"
         f"{d.title}\n\n"
         f"{d.description}\n\n"
-        f"Preis: {d.price_eur} EUR {d.price_type}\n"
+        f"Preis: {d.price_eur} EUR\n"
         f"Kategorie-Vorschlag: {d.category}\n"
         f"Zustand: {d.condition}\n"
         "```"
@@ -213,40 +206,13 @@ def _yaml_escape(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
-def _extract_login_from_yaml(config_text: str) -> tuple[str, str]:
-    """Extract login.username and login.password from a simple YAML config text."""
-    m = re.search(
-        r"(?ms)^\s*login\s*:\s*\n(?P<body>(?:^[ \t]+.*\n?)*)",
-        config_text,
-    )
-    if not m:
-        return "", ""
-    body = m.group("body")
-
-    def _get_value(key: str) -> str:
-        km = re.search(rf"(?m)^\s*{key}\s*:\s*(.+?)\s*$", body)
-        if not km:
-            return ""
-        v = km.group(1).strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-            v = v[1:-1]
-        return v.strip()
-
-    return _get_value("username"), _get_value("password")
-
-
-def _strip_top_level_key_block(config_text: str, key: str) -> str:
-    """Remove a top-level YAML key block (best-effort, for simple YAML layouts)."""
-    pattern = rf"(?ms)^\s*{re.escape(key)}\s*:\s*\n(?:^[ \t]+.*\n?)*"
-    return re.sub(pattern, "", config_text)
-
-
-def write_ad_files(d: Draft) -> Path:
+def write_ad_files(d: Draft, chat_id: int) -> Path:
     """Persist photos + ad.yaml into a fresh working directory. Returns ad.yaml path."""
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    work_dir = _user_work_dir(chat_id)
+    work_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
     safe_title = re.sub(r"[^a-zA-Z0-9_-]+", "_", d.title)[:40] or "ad"
-    ad_dir = WORK_DIR / f"{ts}_{safe_title}"
+    ad_dir = work_dir / f"{ts}_{safe_title}"
     ad_dir.mkdir(parents=True)
 
     for i, img in enumerate(d.photos, start=1):
@@ -260,8 +226,6 @@ def write_ad_files(d: Draft) -> Path:
         f"description: {_yaml_escape(desc)}\n"
         f"category: {_yaml_escape(d.category)}\n"
         f"price: {int(d.price_eur)}\n"
-        f"price_type: {_price_type_to_bot(d.price_type)}\n"
-        f"shipping_type: {DEFAULT_SHIPPING_TYPE}\n"
         'images:\n  - "*.jpg"\n'
     )
     ad_file = ad_dir / "ad.yaml"
@@ -269,61 +233,46 @@ def write_ad_files(d: Draft) -> Path:
     return ad_file
 
 
-async def run_kleinanzeigen_bot(ad_file: Path) -> tuple[int, str]:
-    """Run kleinanzeigen-bot publish on the given ad. Returns (rc, combined_output)."""
-    ad_dir = ad_file.parent
-    run_config = ad_dir / "_run_config.yaml"
+async def run_kleinanzeigen_bot(chat_id: int) -> tuple[int, str]:
+    """Run kleinanzeigen-bot publish for a specific user. Returns (rc, combined_output).
 
-    cfg_text = ""
-    cfg_user = ""
-    cfg_pw = ""
-    cfg_path = Path(KLEINANZEIGEN_CONFIG)
-    if cfg_path.exists():
-        cfg_text = cfg_path.read_text(encoding="utf-8")
-        cfg_user, cfg_pw = _extract_login_from_yaml(cfg_text)
+    Each user needs their own config.yaml at:
+        KLEINANZEIGEN_BASE_DIR/<chat_id>/config.yaml
 
-    env_user = os.environ.get("KLEINANZEIGEN_USERNAME", "").strip()
-    env_pw = os.environ.get("KLEINANZEIGEN_PASSWORD", "").strip()
-    login_user = env_user or cfg_user
-    login_pw = env_pw or cfg_pw
-    if not login_user or not login_pw:
+    The file must be created once manually with login credentials, browser
+    arguments, and an ad_files glob covering the user's ads directory, e.g.:
+
+        login:
+          username: "user@example.com"
+          password: "secret"
+        ad_files:
+          - "ads/*/ad.yaml"
+        browser:
+          arguments:
+            - --no-sandbox
+            - --disable-dev-shm-usage
+            - --disable-gpu
+            - --ozone-platform=headless
+    """
+    cfg_path = _user_config_path(chat_id)
+    if not cfg_path.exists():
         raise RuntimeError(
-            "Kleinanzeigen-Login unvollstaendig: username und password erforderlich "
-            "(in KLEINANZEIGEN_CONFIG oder per KLEINANZEIGEN_USERNAME/KLEINANZEIGEN_PASSWORD)."
+            f"Konfigurationsdatei nicht gefunden: {cfg_path}\n"
+            f"Bitte config.yaml für Nutzer {chat_id} mit Login-Daten, "
+            "ad_files-Glob und Browser-Argumenten einmalig manuell anlegen."
         )
-
-    base_config_text = cfg_text
-    if base_config_text:
-        base_config_text = _strip_top_level_key_block(base_config_text, "login")
-        base_config_text = _strip_top_level_key_block(base_config_text, "ad_files")
-        base_config_text = _strip_top_level_key_block(base_config_text, "browser")
-        base_config_text = base_config_text.rstrip() + "\n"
-
-    run_config.write_text(
-        base_config_text
-        + "login:\n"
-        + f"  username: {_yaml_escape(login_user)}\n"
-        + f"  password: {_yaml_escape(login_pw)}\n"
-        + 'ad_files:\n  - "ad.yaml"\n'
-        + "browser:\n"
-        + "  arguments:\n"
-        + "    - --no-sandbox\n"
-        + "    - --disable-dev-shm-usage\n"
-        + "    - --disable-gpu\n"
-        + "    - --ozone-platform=headless\n",
-        encoding="utf-8",
-    )
     cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [
         "--workspace-mode=xdg",
         "--config",
-        str(run_config),
+        str(cfg_path),
         "publish",
         "--ads",
         "new",
     ]
-    log.info("Running: %s", " ".join(cmd))
+    log.info("[chat=%d] Running: %s", chat_id, " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        cwd=str(cfg_path.parent),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
@@ -845,12 +794,10 @@ async def _process_photos(
             pass  # keep original order on any error
     if not d.title:
         d.title = "?"
-    if not d.price_type:
-        d.price_type = "VB"
     DRAFTS[chat_id] = d
     log.info(
         "[chat=%d] draft created: title=%r price=%s %s",
-        chat_id, d.title, d.price_eur, d.price_type,
+        chat_id, d.title, d.price_eur,
     )
     await context.bot.send_message(
         chat_id,
@@ -863,14 +810,15 @@ async def _process_photos(
 async def handle_publish_job(job_data: dict) -> tuple[bool, str]:
     """
     Handler for publish_ad jobs in the background worker.
-    
+
     Returns (success, message).
     """
-    ad_file = Path(job_data["ad_file"])
     chat_id = job_data["chat_id"]
+    ad_file = job_data.get("ad_file", "unknown")  # kept for logging only
+    log.info("[chat=%d] Publishing ad from %s", chat_id, ad_file)
 
     try:
-        rc, output = await run_kleinanzeigen_bot(ad_file)
+        rc, output = await run_kleinanzeigen_bot(chat_id)
     except Exception as e:
         log.exception("[chat=%d] publish handler failed", chat_id)
         return False, f"Exception: {e}"
@@ -948,7 +896,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
         try:
-            ad_file = write_ad_files(d)
+            ad_file = write_ad_files(d, chat_id)
         except Exception as e:
             log.exception("Failed to write ad files")
             await context.bot.send_message(chat_id, f"Fehler beim Speichern: {e}")
