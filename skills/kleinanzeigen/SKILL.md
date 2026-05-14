@@ -1,7 +1,7 @@
 ---
 name: kleinanzeigen
-description: Kleinanzeigen.de-Inserate aus Fotos erstellen und veröffentlichen.
-allowed-tools: publish_kleinanzeigen_ad
+description: Kleinanzeigen.de-Inserate aus Fotos erstellen, veröffentlichen und verwalten.
+allowed-tools: publish_kleinanzeigen_ad, list_kleinanzeigen_ads, delete_kleinanzeigen_ad, deactivate_kleinanzeigen_ad
 ---
 
 ## Kleinanzeigen-Inserate
@@ -36,3 +36,23 @@ formulieren"), wende den Wunsch an und gib das vollständige aktualisierte JSON 
 Wenn der Nutzer das Inserat veröffentlichen möchte, rufe das Tool publish_kleinanzeigen_ad
 mit dem Pfad zur ad.yaml-Datei auf (nach dem Schreiben der Dateien).
 Antworte auf Inserate-Anfragen NUR mit dem JSON, keine Markdown-Codefences, kein Fließtext.
+
+### Inserate verwalten
+Wenn der Nutzer seine Inserate sehen, löschen oder deaktivieren möchte:
+
+1. **Auflisten**: Rufe `list_kleinanzeigen_ads()` auf. Gib die Inserate übersichtlich
+   aus: Titel, Preis, Status (aktiv/inaktiv), Kleinanzeigen-ID wenn vorhanden.
+
+2. **Löschen** (vom Server und lokal): Rufe zuerst `list_kleinanzeigen_ads()` auf, um
+   den richtigen Index zu finden. Dann `delete_kleinanzeigen_ad(ad_index=N)`. Das
+   löscht das Inserat auf Kleinanzeigen.de (über Browser-Automatisierung) und
+   deaktiviert es lokal. Gibt es mehrere passende Treffer, frage nach.
+
+3. **Deaktivieren** (nur lokal, Inserat bleibt live): Rufe `list_kleinanzeigen_ads()`
+   auf, dann `deactivate_kleinanzeigen_ad(ad_index=N)`. Das verhindert künftiges
+   Republizieren, ohne das Inserat von der Plattform zu entfernen.
+
+Beispiele für Nutzeranfragen:
+- "Zeige mir meine Kleinanzeigen" → list_kleinanzeigen_ads()
+- "Lösche die Anzeige für den Kinderwagen" → list + delete_kleinanzeigen_ad(passender Index)
+- "Deaktiviere das Fahrrad-Inserat" → list + deactivate_kleinanzeigen_ad(passender Index)

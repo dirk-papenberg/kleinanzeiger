@@ -37,7 +37,7 @@ from telegram.ext import (
 from background_worker import BackgroundWorker
 from queue_manager import QueueManager
 from agent_registry import get_agent, clear_agent
-from tools import set_queue_enqueue_fn
+from tools import set_queue_enqueue_fn, set_agent_chat_id
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -68,6 +68,13 @@ def _user_config_path(chat_id: int) -> Path:
 def _user_work_dir(chat_id: int) -> Path:
     """Return the ads working directory for a given Telegram chat user."""
     return KLEINANZEIGEN_BASE_DIR / str(chat_id) / "ads"
+
+KLEINANZEIGEN_REPUBLISH_TIME = datetime.time(
+    int(os.environ.get("KLEINANZEIGEN_REPUBLISH_HOUR", "9")),
+    int(os.environ.get("KLEINANZEIGEN_REPUBLISH_MINUTE", "0")),
+    tzinfo=ZoneInfo("Europe/Berlin"),
+)
+
 QUEUE_DIR = Path(
     os.environ.get(
         "KLEINANZEIGEN_QUEUE_DIR",
@@ -233,7 +240,7 @@ def write_ad_files(d: Draft, chat_id: int) -> Path:
     return ad_file
 
 
-async def run_kleinanzeigen_bot(chat_id: int) -> tuple[int, str]:
+async def run_kleinanzeigen_bot(chat_id: int, *, ads_filter: str = "new") -> tuple[int, str]:
     """Run kleinanzeigen-bot publish for a specific user. Returns (rc, combined_output).
 
     Each user needs their own config.yaml at:
@@ -262,12 +269,12 @@ async def run_kleinanzeigen_bot(chat_id: int) -> tuple[int, str]:
             "ad_files-Glob und Browser-Argumenten einmalig manuell anlegen."
         )
     cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [
-        "--workspace-mode=xdg",
+        "--workspace-mode=portable",
         "--config",
         str(cfg_path),
         "publish",
         "--ads",
-        "new",
+        ads_filter,
     ]
     log.info("[chat=%d] Running: %s", chat_id, " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
@@ -278,6 +285,90 @@ async def run_kleinanzeigen_bot(chat_id: int) -> tuple[int, str]:
     )
     stdout_b, _ = await proc.communicate()
     return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace")
+
+
+async def run_kleinanzeigen_bot_delete(chat_id: int, ad_file: Path) -> tuple[int, str]:
+    """Run kleinanzeigen-bot delete for a single ad file, then deactivate it locally.
+
+    On success (rc=0) sets active: false in the ad.yaml so the daily republish
+    job will never pick it up again.
+    """
+    cfg_path = _user_config_path(chat_id)
+    if not cfg_path.exists():
+        raise RuntimeError(
+            f"Konfigurationsdatei nicht gefunden: {cfg_path}"
+        )
+    # Build a temporary ad_files glob pointing only at this one file so the
+    # delete command won't touch any other ads.
+    rel = ad_file.relative_to(cfg_path.parent)
+    cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [
+        "--workspace-mode=portable",
+        "--config",
+        str(cfg_path),
+        "delete",
+        "--ads",
+        str(rel),
+    ]
+    log.info("[chat=%d] Deleting ad: %s", chat_id, " ".join(cmd))
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cfg_path.parent),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout_b, _ = await proc.communicate()
+    rc = proc.returncode or 0
+    output = stdout_b.decode("utf-8", errors="replace")
+
+    if rc == 0:
+        _set_ad_inactive(ad_file)
+
+    return rc, output
+
+
+def _set_ad_inactive(ad_file: Path) -> None:
+    """Set active: false in an ad.yaml file (best-effort, line-based)."""
+    try:
+        text = ad_file.read_text(encoding="utf-8")
+        text = re.sub(r"(?m)^active:\s*(true|false)\s*$", "active: false", text)
+        if "active:" not in text:
+            text = "active: false\n" + text
+        ad_file.write_text(text, encoding="utf-8")
+        log.info("Deactivated %s", ad_file)
+    except OSError as e:
+        log.error("Failed to deactivate %s: %s", ad_file, e)
+
+
+def _list_user_ads(chat_id: int) -> list[dict]:
+    """Return a list of ad metadata dicts for all ad.yaml files of a user.
+
+    Each dict has: path, title, price, active, ad_id.
+    Only ad.yaml files inside the user's work dir are considered.
+    """
+    work_dir = _user_work_dir(chat_id)
+    if not work_dir.exists():
+        return []
+    ads = []
+    for ad_yaml in sorted(work_dir.glob("*/ad.yaml")):
+        try:
+            text = ad_yaml.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        def _field(key: str, default: str = "") -> str:
+            m = re.search(rf"(?m)^{key}:\s*(.+?)\s*$", text)
+            if not m:
+                return default
+            v = m.group(1).strip().strip('"').strip("'")
+            return v
+        active_raw = _field("active", "true").lower()
+        ads.append({
+            "path": ad_yaml,
+            "title": _field("title", ad_yaml.parent.name),
+            "price": _field("price", "?"),
+            "active": active_raw not in ("false", "0", "no"),
+            "ad_id": _field("id", ""),
+        })
+    return ads
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +410,7 @@ async def _call_agent(
     """
     agent = get_agent(chat_id)
     user_input = _build_agent_input(chat_id, message, photos)
-
+    set_agent_chat_id(chat_id)
     result = await asyncio.to_thread(agent, user_input)
     return str(result)
 
@@ -366,6 +457,7 @@ async def _call_agent_streaming(
 ) -> str:
     """Stream a text-only Strands response into Telegram by editing one message."""
     agent = get_agent(chat_id)
+    set_agent_chat_id(chat_id)
     stream_message = await context.bot.send_message(chat_id, "🤖 Moment, bitte…")
     stream_async = getattr(agent, "stream_async", None)
     if not callable(stream_async):
@@ -520,6 +612,34 @@ async def send_lunch_plan(context: ContextTypes.DEFAULT_TYPE) -> None:
             await _trigger_week_plan(user_id, context)
 
 
+async def republish_kleinanzeigen(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """JobQueue callback: re-run kleinanzeigen-bot for every allowed user daily."""
+    if not KLEINANZEIGEN_BOT_CMD:
+        return
+    log.info("Daily republish run for %d user(s)", len(ALLOWED_USER_IDS))
+    for user_id in ALLOWED_USER_IDS:
+        cfg_path = _user_config_path(user_id)
+        if not cfg_path.exists():
+            log.info("[chat=%d] No config.yaml – skipping republish", user_id)
+            continue
+        try:
+            rc, output = await run_kleinanzeigen_bot(user_id, ads_filter="due")
+        except Exception as e:
+            log.error("[chat=%d] republish failed: %s", user_id, e)
+            continue
+        if rc == 0:
+            log.info("[chat=%d] republish succeeded", user_id)
+        else:
+            log.error("[chat=%d] republish failed (rc=%d):\n%s", user_id, rc, output)
+            try:
+                await context.bot.send_message(
+                    user_id,
+                    f"⚠️ Tägliche Neu-Veröffentlichung fehlgeschlagen (rc={rc})",
+                )
+            except Exception as notify_err:
+                log.error("[chat=%d] failed to notify user: %s", user_id, notify_err)
+
+
 async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Hallo! Ich kann zwei Dinge:\n\n"
@@ -529,12 +649,56 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "aktuellen Essensplan. Falls für die nächste Woche noch etwas fehlt, "
         "schlage ich einen Plan vor.\n\n"
         "Befehle:\n"
+        "/inserate — Aktive Inserate verwalten\n"
         "/lunch — Heutiges Mittagessen anzeigen\n"
         "/plan — Essensplan für nächste Woche vorschlagen\n"
         "/neu — Konversation zurücksetzen\n"
         "/queue — Warteschlangen-Status",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+async def cmd_inserate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all ads for the user with per-ad management buttons."""
+    chat_id = update.effective_chat.id
+    ads = _list_user_ads(chat_id)
+    if not ads:
+        await update.message.reply_text("Keine lokalen Inserate gefunden.")
+        return
+
+    for ad in ads:
+        status = "🟢 aktiv" if ad["active"] else "🔴 inaktiv"
+        ad_id_label = f"  _(ID: {ad['ad_id']})_" if ad["ad_id"] else ""
+        caption = (
+            f"*{escape_md(ad['title'])}*{ad_id_label}\n"
+            f"Preis: {ad['price']} EUR  ·  {status}"
+        )
+        path_str = str(ad["path"])
+        rows = []
+        if ad["active"]:
+            rows.append([
+                InlineKeyboardButton(
+                    "🗑 Löschen (Site + lokal)",
+                    callback_data=f"del:{path_str}",
+                ),
+                InlineKeyboardButton(
+                    "⏸ Deaktivieren (nur lokal)",
+                    callback_data=f"deact:{path_str}",
+                ),
+            ])
+        else:
+            rows.append([
+                InlineKeyboardButton(
+                    "▶️ Reaktivieren",
+                    callback_data=f"react:{path_str}",
+                ),
+            ])
+        await context.bot.send_message(
+            chat_id,
+            caption,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
 
 
 async def cmd_neu(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -808,11 +972,7 @@ async def _process_photos(
 
 
 async def handle_publish_job(job_data: dict) -> tuple[bool, str]:
-    """
-    Handler for publish_ad jobs in the background worker.
-
-    Returns (success, message).
-    """
+    """Handler for publish_ad jobs. Returns (success, message)."""
     chat_id = job_data["chat_id"]
     ad_file = job_data.get("ad_file", "unknown")  # kept for logging only
     log.info("[chat=%d] Publishing ad from %s", chat_id, ad_file)
@@ -831,11 +991,75 @@ async def handle_publish_job(job_data: dict) -> tuple[bool, str]:
         return False, f"Kleinanzeigen-Bot Fehler (rc={rc})"
 
 
+async def handle_delete_job(job_data: dict) -> tuple[bool, str]:
+    """Handler for delete_ad jobs. Returns (success, message)."""
+    chat_id = job_data["chat_id"]
+    ad_file = Path(job_data["ad_file"])
+    log.info("[chat=%d] Deleting ad %s", chat_id, ad_file)
+
+    try:
+        rc, output = await run_kleinanzeigen_bot_delete(chat_id, ad_file)
+    except Exception as e:
+        log.exception("[chat=%d] delete handler failed", chat_id)
+        return False, f"Exception: {e}"
+
+    if rc == 0:
+        log.info("[chat=%d] delete succeeded:\n%s", chat_id, output)
+        return True, "✅ Inserat gelöscht und deaktiviert."
+    else:
+        log.error("[chat=%d] delete failed (rc=%d):\n%s", chat_id, rc, output)
+        return False, f"Löschen fehlgeschlagen (rc={rc})"
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
     chat_id = update.effective_chat.id
     log.info("[chat=%d] button pressed: %r", chat_id, q.data)
+
+    # ── Ad management (del: / deact: / react:) ───────────────────────────
+    for prefix, action in (("del:", "delete"), ("deact:", "deactivate"), ("react:", "reactivate")):
+        if q.data.startswith(prefix):
+            ad_file = Path(q.data[len(prefix):])
+            await q.edit_message_reply_markup(reply_markup=None)
+
+            if action == "delete":
+                if not KLEINANZEIGEN_BOT_CMD:
+                    await context.bot.send_message(
+                        chat_id,
+                        "⚠️ KLEINANZEIGEN_BOT_CMD nicht konfiguriert – kann nicht löschen.",
+                    )
+                    return
+                job_id = str(uuid.uuid4())
+                QUEUE_MANAGER.enqueue(
+                    job_id=job_id,
+                    chat_id=chat_id,
+                    job_type="delete_ad",
+                    data={"ad_file": str(ad_file), "chat_id": chat_id},
+                )
+                await context.bot.send_message(
+                    chat_id,
+                    f"⏳ Inserat wird gelöscht…\n_Job-ID: {job_id[:8]}_",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+
+            elif action == "deactivate":
+                _set_ad_inactive(ad_file)
+                await context.bot.send_message(
+                    chat_id, "⏸ Inserat lokal deaktiviert (wird nicht mehr republiziert)."
+                )
+
+            elif action == "reactivate":
+                try:
+                    text = ad_file.read_text(encoding="utf-8")
+                    text = re.sub(r"(?m)^active:\s*(true|false)\s*$", "active: true", text)
+                    ad_file.write_text(text, encoding="utf-8")
+                    await context.bot.send_message(
+                        chat_id, "▶️ Inserat reaktiviert – wird beim nächsten Lauf neu geschaltet."
+                    )
+                except OSError as e:
+                    await context.bot.send_message(chat_id, f"Fehler: {e}")
+            return
 
     # ── Lunch plan confirmation ────────────────────────────────────────────
     if q.data == "plan_accept":
@@ -948,6 +1172,7 @@ def main() -> None:
     # Job handlers
     job_handlers = {
         "publish_ad": handle_publish_job,
+        "delete_ad": handle_delete_job,
     }
 
     app = Application.builder().token(token).build()
@@ -986,6 +1211,16 @@ def main() -> None:
             name="lunch_plan_daily",
         )
         log.info("Lunch plan job scheduled at 08:30 Europe/Berlin")
+        if KLEINANZEIGEN_BOT_CMD:
+            app.job_queue.run_daily(
+                republish_kleinanzeigen,
+                time=KLEINANZEIGEN_REPUBLISH_TIME,
+                name="kleinanzeigen_republish_daily",
+            )
+            log.info(
+                "Kleinanzeigen republish job scheduled at %s",
+                KLEINANZEIGEN_REPUBLISH_TIME.strftime("%H:%M"),
+            )
 
     # Register post_stop to stop the background worker
     async def post_stop(app: Application) -> None:
@@ -998,6 +1233,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", cmd_start, filters=user_filter))
     app.add_handler(CommandHandler("help", cmd_start, filters=user_filter))
+    app.add_handler(CommandHandler("inserate", cmd_inserate, filters=user_filter))
     app.add_handler(CommandHandler("neu", cmd_neu, filters=user_filter))
     app.add_handler(CommandHandler("lunch", cmd_lunch, filters=user_filter))
     app.add_handler(CommandHandler("plan", cmd_plan, filters=user_filter))
