@@ -1,7 +1,10 @@
 """Agent registry: one strands.Agent per Telegram chat_id.
 
-Agents are lazily created and cached. Each agent gets its own FileSessionManager
-so conversation history survives container restarts.
+Agents are lazily created and held in memory. Sessions are purely in-memory
+and do not survive container restarts.
+
+A session is automatically reset after SESSION_TIMEOUT_DAYS of inactivity
+(default 1 day, configurable via KLEINANZEIGEN_SESSION_TIMEOUT_DAYS).
 
 Usage:
     from agent_registry import get_agent, clear_agent
@@ -15,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+import time
 
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
@@ -25,14 +28,17 @@ from tools import get_current_date, get_recipes, get_lunch_plan, save_lunch_plan
 
 log = logging.getLogger("kleinanzeigen-agent.registry")
 
-SESSION_DIR = Path(
-    os.environ.get("KLEINANZEIGEN_SESSION_DIR", "/docker-volumes/kleinanzeiger/sessions")
-)
+# Reset session after this many seconds of inactivity (default: 1 day)
+SESSION_TIMEOUT_SECONDS: float = float(
+    os.environ.get("KLEINANZEIGEN_SESSION_TIMEOUT_DAYS", "1")
+) * 86400
 
 _TOOLS = [get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad, list_kleinanzeigen_ads, delete_kleinanzeigen_ad, deactivate_kleinanzeigen_ad]
 
 # chat_id -> Agent
 _agents: dict[int, Agent] = {}
+# chat_id -> last activity timestamp (monotonic seconds)
+_last_activity: dict[int, float] = {}
 
 
 def _make_model():
@@ -55,50 +61,48 @@ def _make_model():
     return AnthropicModel(model_id=model_id, api_key=api_key)
 
 
+def _create_agent(chat_id: int) -> Agent:
+    agent = Agent(
+        model=_make_model(),
+        system_prompt=BASE_SYSTEM_PROMPT,
+        plugins=[build_skills_plugin()],
+        tools=_TOOLS,
+        conversation_manager=SlidingWindowConversationManager(window_size=50),
+    )
+    _agents[chat_id] = agent
+    _last_activity[chat_id] = time.monotonic()
+    log.info("[chat=%d] Agent created (in-memory session)", chat_id)
+    return agent
+
+
 def get_agent(chat_id: int) -> Agent:
-    """Return the Agent for *chat_id*, creating it if necessary."""
-    if chat_id not in _agents:
-        SESSION_DIR.mkdir(parents=True, exist_ok=True)
-        session_dir = SESSION_DIR / str(chat_id)
-        session_dir.mkdir(parents=True, exist_ok=True)
+    """Return the Agent for *chat_id*, creating or resetting it as needed.
 
-        try:
-            from strands.agent.session import FileSessionManager
-            session_manager = FileSessionManager(
-                session_id=str(chat_id),
-                base_dir=str(SESSION_DIR),
-            )
-        except Exception:
-            # Session manager unavailable – proceed without persistence
-            log.warning(
-                "[chat=%d] FileSessionManager unavailable, using in-memory session",
-                chat_id,
-            )
-            session_manager = None
-
-        kwargs: dict = dict(
-            model=_make_model(),
-            system_prompt=BASE_SYSTEM_PROMPT,
-            plugins=[build_skills_plugin()],
-            tools=_TOOLS,
-            conversation_manager=SlidingWindowConversationManager(window_size=50),
+    If the last activity was more than SESSION_TIMEOUT_SECONDS ago, the old
+    agent is discarded and a fresh one is created (resetting conversation history).
+    """
+    now = time.monotonic()
+    last = _last_activity.get(chat_id)
+    if last is not None and (now - last) > SESSION_TIMEOUT_SECONDS:
+        log.info(
+            "[chat=%d] Session timed out after %.1f h – starting fresh",
+            chat_id, (now - last) / 3600,
         )
-        if session_manager is not None:
-            kwargs["session_manager"] = session_manager
+        _agents.pop(chat_id, None)
+        _last_activity.pop(chat_id, None)
 
-        agent = Agent(**kwargs)
-        _agents[chat_id] = agent
-        log.info("[chat=%d] Agent created (session_dir=%s)", chat_id, session_dir)
+    if chat_id not in _agents:
+        return _create_agent(chat_id)
 
+    _last_activity[chat_id] = now
     return _agents[chat_id]
 
 
 def clear_agent(chat_id: int) -> None:
-    """Remove the agent for *chat_id* from the cache.
+    """Discard the in-memory agent for *chat_id* (e.g. on /neu).
 
-    The next call to get_agent() will create a fresh agent (session history on
-    disk is NOT deleted – only the in-memory instance is cleared).
+    The next call to get_agent() will create a fresh agent with empty history.
     """
-    if chat_id in _agents:
-        del _agents[chat_id]
-        log.info("[chat=%d] Agent cleared from registry", chat_id)
+    _agents.pop(chat_id, None)
+    _last_activity.pop(chat_id, None)
+    log.info("[chat=%d] Agent cleared from registry", chat_id)

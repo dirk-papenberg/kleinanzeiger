@@ -8,8 +8,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.2 /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    KLEINANZEIGEN_SESSION_DIR=/docker-volumes/kleinanzeiger/sessions
+    PYTHONUNBUFFERED=1
 
 # Run as non-root user (fixed UID so host volume permissions can be set to match)
 RUN useradd --create-home --shell /bin/false --uid 1001 appuser

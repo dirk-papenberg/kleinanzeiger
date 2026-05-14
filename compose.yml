@@ -18,5 +18,3 @@ services:
     volumes:
       # per-user kleinanzeigen config dirs (config.yaml + ads/)
       - /docker-volumes/kleinanzeiger/kleinanzeigen-config:/docker-volumes/kleinanzeiger/kleinanzeigen-config
-      # agent conversation session history
-      - /docker-volumes/kleinanzeiger/sessions:/docker-volumes/kleinanzeiger/sessions
