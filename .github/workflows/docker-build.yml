@@ -40,6 +40,10 @@ jobs:
             echo "KLEINANZEIGEN_CONFIG=/data/config.yaml"
           } > .env
 
+      - name: Remove existing container
+        if: github.event_name != 'pull_request'
+        run: docker rm -f kleinanzeigen-agent || true
+
       - name: Build and deploy
         if: github.event_name != 'pull_request'
         env:
