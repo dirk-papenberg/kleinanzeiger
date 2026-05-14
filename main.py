@@ -78,7 +78,7 @@ KLEINANZEIGEN_REPUBLISH_TIME = datetime.time(
 QUEUE_DIR = Path(
     os.environ.get(
         "KLEINANZEIGEN_QUEUE_DIR",
-        "/docker-volumes/kleinanzeiger/kleinanzeigen-config/queue",
+        "/tmp/kleinanzeigen-queue",
     )
 )
 LUNCH_PLAN_BASE_URL = os.environ.get(

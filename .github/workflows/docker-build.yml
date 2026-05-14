@@ -35,9 +35,7 @@ jobs:
             echo "KLEINANZEIGEN_PASSWORD=${KLEINANZEIGEN_PASSWORD}"
             echo "ALLOWED_USERS=${ALLOWED_USERS}"
             echo "KLEINANZEIGEN_BOT_CMD=/usr/local/bin/kleinanzeigen"
-            echo "KLEINANZEIGEN_WORK_DIR=/data/ads"
-            echo "KLEINANZEIGEN_QUEUE_DIR=/data/queue"
-            echo "KLEINANZEIGEN_CONFIG=/data/config.yaml"
+            echo "KLEINANZEIGEN_BASE_DIR=/docker-volumes/kleinanzeiger/kleinanzeigen-config"
           } > .env
 
       - name: Remove existing container
