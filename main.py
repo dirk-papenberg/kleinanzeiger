@@ -235,7 +235,7 @@ def write_ad_files(d: Draft, chat_id: int) -> Path:
         f"price: {int(d.price_eur)}\n"
         'images:\n  - "*.jpg"\n'
     )
-    ad_file = ad_dir / "ad.yaml"
+    ad_file = ad_dir / "ad_new.yaml"
     ad_file.write_text(yaml_text, encoding="utf-8")
     return ad_file
 
