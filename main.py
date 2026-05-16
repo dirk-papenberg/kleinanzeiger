@@ -960,7 +960,7 @@ async def _process_photos(
         d.title = "?"
     DRAFTS[chat_id] = d
     log.info(
-        "[chat=%d] draft created: title=%r price=%s %s",
+        "[chat=%d] draft created: title=%r price=%s",
         chat_id, d.title, d.price_eur,
     )
     await context.bot.send_message(
