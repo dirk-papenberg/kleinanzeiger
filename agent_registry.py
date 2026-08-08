@@ -50,7 +50,7 @@ def _make_model():
     if provider == "bedrock":
         from strands.models import BedrockModel
         model_id = os.environ.get(
-            "CLAUDE_MODEL", "anthropic.claude-sonnet-5"
+            "CLAUDE_MODEL", "eu.anthropic.claude-sonnet-5"
         )
         region = os.environ.get("AWS_REGION", "eu-central-1")
         return BedrockModel(model_id=model_id, region_name=region)
