@@ -24,15 +24,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-          KLEINANZEIGEN_USERNAME: ${{ secrets.KLEINANZEIGEN_USERNAME }}
-          KLEINANZEIGEN_PASSWORD: ${{ secrets.KLEINANZEIGEN_PASSWORD }}
           ALLOWED_USERS: ${{ secrets.ALLOWED_USERS }}
         run: |
           {
             echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
             echo "AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}"
-            echo "KLEINANZEIGEN_USERNAME=${KLEINANZEIGEN_USERNAME}"
-            echo "KLEINANZEIGEN_PASSWORD=${KLEINANZEIGEN_PASSWORD}"
             echo "ALLOWED_USERS=${ALLOWED_USERS}"
             echo "KLEINANZEIGEN_BOT_CMD=/usr/local/bin/kleinanzeigen"
             echo "KLEINANZEIGEN_BASE_DIR=/docker-volumes/kleinanzeiger/kleinanzeigen-config"

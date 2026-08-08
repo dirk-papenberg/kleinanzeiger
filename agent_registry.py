@@ -50,13 +50,13 @@ def _make_model():
     if provider == "bedrock":
         from strands.models import BedrockModel
         model_id = os.environ.get(
-            "CLAUDE_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            "CLAUDE_MODEL", "anthropic.claude-sonnet-5"
         )
-        region = os.environ.get("AWS_REGION", "us-east-1")
+        region = os.environ.get("AWS_REGION", "eu-central-1")
         return BedrockModel(model_id=model_id, region_name=region)
 
     from strands.models.anthropic import AnthropicModel
-    model_id = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+    model_id = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     return AnthropicModel(model_id=model_id, api_key=api_key)
 
