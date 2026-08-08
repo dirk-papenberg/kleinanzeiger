@@ -24,16 +24,34 @@ from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
 from skills import BASE_SYSTEM_PROMPT, build_skills_plugin
-from tools import get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad, list_kleinanzeigen_ads, delete_kleinanzeigen_ad, deactivate_kleinanzeigen_ad
+from tools import (
+    deactivate_kleinanzeigen_ad,
+    delete_kleinanzeigen_ad,
+    get_current_date,
+    get_lunch_plan,
+    get_recipes,
+    list_kleinanzeigen_ads,
+    publish_kleinanzeigen_ad,
+    save_lunch_plan,
+)
 
 log = logging.getLogger("kleinanzeigen-agent.registry")
 
 # Reset session after this many seconds of inactivity (default: 1 day)
-SESSION_TIMEOUT_SECONDS: float = float(
-    os.environ.get("KLEINANZEIGEN_SESSION_TIMEOUT_DAYS", "1")
-) * 86400
+SESSION_TIMEOUT_SECONDS: float = (
+    float(os.environ.get("KLEINANZEIGEN_SESSION_TIMEOUT_DAYS", "1")) * 86400
+)
 
-_TOOLS = [get_current_date, get_recipes, get_lunch_plan, save_lunch_plan, publish_kleinanzeigen_ad, list_kleinanzeigen_ads, delete_kleinanzeigen_ad, deactivate_kleinanzeigen_ad]
+_TOOLS = [
+    get_current_date,
+    get_recipes,
+    get_lunch_plan,
+    save_lunch_plan,
+    publish_kleinanzeigen_ad,
+    list_kleinanzeigen_ads,
+    delete_kleinanzeigen_ad,
+    deactivate_kleinanzeigen_ad,
+]
 
 # chat_id -> Agent
 _agents: dict[int, Agent] = {}
@@ -45,17 +63,19 @@ def _make_model():
     """Create a Strands model based on the active LLM provider."""
     provider = os.environ.get("LLM_PROVIDER", "").lower()
     if not provider:
-        provider = "bedrock" if os.environ.get("AWS_BEARER_TOKEN_BEDROCK") else "anthropic"
+        provider = (
+            "bedrock" if os.environ.get("AWS_BEARER_TOKEN_BEDROCK") else "anthropic"
+        )
 
     if provider == "bedrock":
         from strands.models import BedrockModel
-        model_id = os.environ.get(
-            "CLAUDE_MODEL", "eu.anthropic.claude-sonnet-5"
-        )
+
+        model_id = os.environ.get("CLAUDE_MODEL", "eu.anthropic.claude-sonnet-5")
         region = os.environ.get("AWS_REGION", "eu-central-1")
         return BedrockModel(model_id=model_id, region_name=region)
 
     from strands.models.anthropic import AnthropicModel
+
     model_id = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     return AnthropicModel(model_id=model_id, api_key=api_key)
@@ -86,7 +106,8 @@ def get_agent(chat_id: int) -> Agent:
     if last is not None and (now - last) > SESSION_TIMEOUT_SECONDS:
         log.info(
             "[chat=%d] Session timed out after %.1f h – starting fresh",
-            chat_id, (now - last) / 3600,
+            chat_id,
+            (now - last) / 3600,
         )
         _agents.pop(chat_id, None)
         _last_activity.pop(chat_id, None)

@@ -69,6 +69,23 @@ def _user_work_dir(chat_id: int) -> Path:
     """Return the ads working directory for a given Telegram chat user."""
     return KLEINANZEIGEN_BASE_DIR / str(chat_id) / "ads"
 
+
+def _clear_stale_browser_lock(cfg_path: Path) -> None:
+    """Remove Chromium SingletonLock/Cookie/Socket files left behind by a
+    previous container instance (its hostname no longer matches ours, so
+    Chromium refuses to reuse the profile and publishing fails).
+    """
+    profile_dir = cfg_path.parent / ".temp" / "browser-profile"
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        lock_file = profile_dir / name
+        try:
+            lock_file.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("Could not remove stale browser lock %s: %s", lock_file, e)
+
+
 KLEINANZEIGEN_REPUBLISH_TIME = datetime.time(
     int(os.environ.get("KLEINANZEIGEN_REPUBLISH_HOUR", "9")),
     int(os.environ.get("KLEINANZEIGEN_REPUBLISH_MINUTE", "0")),
@@ -268,6 +285,7 @@ async def run_kleinanzeigen_bot(chat_id: int, *, ads_filter: str = "new") -> tup
             f"Bitte config.yaml für Nutzer {chat_id} mit Login-Daten, "
             "ad_files-Glob und Browser-Argumenten einmalig manuell anlegen."
         )
+    _clear_stale_browser_lock(cfg_path)
     cmd = shlex.split(KLEINANZEIGEN_BOT_CMD) + [
         "--workspace-mode=portable",
         "--config",
@@ -298,6 +316,7 @@ async def run_kleinanzeigen_bot_delete(chat_id: int, ad_file: Path) -> tuple[int
         raise RuntimeError(
             f"Konfigurationsdatei nicht gefunden: {cfg_path}"
         )
+    _clear_stale_browser_lock(cfg_path)
     # Build a temporary ad_files glob pointing only at this one file so the
     # delete command won't touch any other ads.
     rel = ad_file.relative_to(cfg_path.parent)
