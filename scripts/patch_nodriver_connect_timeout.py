@@ -2,9 +2,9 @@
 """Post-install patch for nodriver's Chrome DevTools connect-retry loop.
 
 kleinanzeigen-bot's ``nodriver/core/browser.py`` ``Browser.start()`` only
-polls Chrome's DevTools ``/json/version`` endpoint 5 times (2s timeout each,
-0.5s between, 0.25s initial delay - a ~2.75s..12.5s window depending on
-whether attempts fail fast or time out) before raising:
+polls Chrome's DevTools ``/json/version`` endpoint 5 times (no per-attempt
+asyncio timeout - just whatever ``HTTPApi``'s underlying ``urllib`` call
+happens to use, 0.5s between attempts, 0.25s initial delay) before raising:
 
     "Failed to start browser... Failed to connect to browser... root..."
 
@@ -36,10 +36,7 @@ _ORIG_BLOCK = """\
         await asyncio.sleep(0.25)
         for _ in range(5):
             try:
-                self.info = ContraDict(
-                    await asyncio.wait_for(self._http.get("version"), 2),
-                    silent=True,
-                )
+                self.info = ContraDict(await self._http.get("version"), silent=True)
             except (Exception,):
                 if _ == 4:
                     logger.debug("could not start", exc_info=True)
