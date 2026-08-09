@@ -37,6 +37,7 @@ _ORIG_BLOCK = """\
         for _ in range(5):
             try:
                 self.info = ContraDict(await self._http.get("version"), silent=True)
+
             except (Exception,):
                 if _ == 4:
                     logger.debug("could not start", exc_info=True)
