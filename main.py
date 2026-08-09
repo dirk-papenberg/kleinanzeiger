@@ -22,7 +22,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
-from telegram.helpers import escape_markdown
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -33,11 +32,12 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.helpers import escape_markdown
 
+from agent_registry import clear_agent, get_agent
 from background_worker import BackgroundWorker
 from queue_manager import QueueManager
-from agent_registry import get_agent, clear_agent
-from tools import set_queue_enqueue_fn, set_agent_chat_id
+from tools import set_agent_chat_id, set_queue_enqueue_fn
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -121,6 +121,7 @@ BACKGROUND_WORKER: BackgroundWorker | None = None
 # used for rendering and writing ad files.
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Draft:
     photos: list[bytes] = field(default_factory=list)
@@ -146,6 +147,7 @@ PENDING_LUNCH_PLAN: set[int] = set()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _apply_dict_to_draft(d: Draft, data: dict) -> None:
     d.title = str(data.get("title", d.title))[:65]
@@ -205,17 +207,23 @@ def ad_keyboard() -> InlineKeyboardMarkup:
 
 
 def plan_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("✅ Annehmen & speichern", callback_data="plan_accept"),
-            InlineKeyboardButton("✏️ Ändern", callback_data="plan_change"),
+            [
+                InlineKeyboardButton(
+                    "✅ Annehmen & speichern", callback_data="plan_accept"
+                ),
+                InlineKeyboardButton("✏️ Ändern", callback_data="plan_change"),
+            ]
         ]
-    ])
+    )
 
 
 def _parse_json_from_response(response: str) -> dict | None:
     """Extract the first JSON object from an agent response, or return None."""
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.MULTILINE).strip()
+    text = re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.MULTILINE
+    ).strip()
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if not match:
         return None
@@ -257,7 +265,50 @@ def write_ad_files(d: Draft, chat_id: int) -> Path:
     return ad_file
 
 
-async def run_kleinanzeigen_bot(chat_id: int, *, ads_filter: str = "new") -> tuple[int, str]:
+# nodriver only polls Chrome's DevTools port for ~2-3s before giving up, so a
+# slow cold start can fail even though the browser itself works fine; retrying
+# the whole invocation a few times works around this known upstream race.
+_TRANSIENT_BROWSER_ERROR_MARKER = (
+    "Failed to start browser. This error often occurs when"
+)
+
+
+async def _run_bot_subprocess(cmd: list[str], cwd: Path) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout_b, _ = await proc.communicate()
+    return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace")
+
+
+async def _run_bot_with_retry(
+    chat_id: int, cmd: list[str], cfg_path: Path, *, attempts: int = 3
+) -> tuple[int, str]:
+    """Run the kleinanzeigen-bot subprocess, retrying on the transient browser
+    DevTools-connect race described above.
+    """
+    rc, output = 0, ""
+    for attempt in range(1, attempts + 1):
+        rc, output = await _run_bot_subprocess(cmd, cfg_path.parent)
+        if rc == 0 or _TRANSIENT_BROWSER_ERROR_MARKER not in output:
+            return rc, output
+        log.warning(
+            "[chat=%d] Transient browser startup failure, retrying (%d/%d)",
+            chat_id,
+            attempt,
+            attempts,
+        )
+        _clear_stale_browser_lock(cfg_path)
+        await asyncio.sleep(2)
+    return rc, output
+
+
+async def run_kleinanzeigen_bot(
+    chat_id: int, *, ads_filter: str = "new"
+) -> tuple[int, str]:
     """Run kleinanzeigen-bot publish for a specific user. Returns (rc, combined_output).
 
     Each user needs their own config.yaml at:
@@ -295,14 +346,7 @@ async def run_kleinanzeigen_bot(chat_id: int, *, ads_filter: str = "new") -> tup
         ads_filter,
     ]
     log.info("[chat=%d] Running: %s", chat_id, " ".join(cmd))
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cfg_path.parent),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    stdout_b, _ = await proc.communicate()
-    return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace")
+    return await _run_bot_with_retry(chat_id, cmd, cfg_path)
 
 
 async def run_kleinanzeigen_bot_delete(chat_id: int, ad_file: Path) -> tuple[int, str]:
@@ -313,9 +357,7 @@ async def run_kleinanzeigen_bot_delete(chat_id: int, ad_file: Path) -> tuple[int
     """
     cfg_path = _user_config_path(chat_id)
     if not cfg_path.exists():
-        raise RuntimeError(
-            f"Konfigurationsdatei nicht gefunden: {cfg_path}"
-        )
+        raise RuntimeError(f"Konfigurationsdatei nicht gefunden: {cfg_path}")
     _clear_stale_browser_lock(cfg_path)
     # Build a temporary ad_files glob pointing only at this one file so the
     # delete command won't touch any other ads.
@@ -329,15 +371,7 @@ async def run_kleinanzeigen_bot_delete(chat_id: int, ad_file: Path) -> tuple[int
         str(rel),
     ]
     log.info("[chat=%d] Deleting ad: %s", chat_id, " ".join(cmd))
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cfg_path.parent),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    stdout_b, _ = await proc.communicate()
-    rc = proc.returncode or 0
-    output = stdout_b.decode("utf-8", errors="replace")
+    rc, output = await _run_bot_with_retry(chat_id, cmd, cfg_path)
 
     if rc == 0:
         _set_ad_inactive(ad_file)
@@ -373,26 +407,31 @@ def _list_user_ads(chat_id: int) -> list[dict]:
             text = ad_yaml.read_text(encoding="utf-8")
         except OSError:
             continue
+
         def _field(key: str, default: str = "") -> str:
             m = re.search(rf"(?m)^{key}:\s*(.+?)\s*$", text)
             if not m:
                 return default
             v = m.group(1).strip().strip('"').strip("'")
             return v
+
         active_raw = _field("active", "true").lower()
-        ads.append({
-            "path": ad_yaml,
-            "title": _field("title", ad_yaml.parent.name),
-            "price": _field("price", "?"),
-            "active": active_raw not in ("false", "0", "no"),
-            "ad_id": _field("id", ""),
-        })
+        ads.append(
+            {
+                "path": ad_yaml,
+                "title": _field("title", ad_yaml.parent.name),
+                "price": _field("price", "?"),
+                "active": active_raw not in ("false", "0", "no"),
+                "ad_id": _field("id", ""),
+            }
+        )
     return ads
 
 
 # ---------------------------------------------------------------------------
 # Agent bridge
 # ---------------------------------------------------------------------------
+
 
 def _build_agent_input(
     chat_id: int,
@@ -403,12 +442,14 @@ def _build_agent_input(
         content: list[dict] = []
         for img in photos[:8]:
             log.info("[chat=%d] photo %d KB → agent", chat_id, len(img) // 1024)
-            content.append({
-                "image": {
-                    "format": "jpeg",
-                    "source": {"bytes": img},
-                },
-            })
+            content.append(
+                {
+                    "image": {
+                        "format": "jpeg",
+                        "source": {"bytes": img},
+                    },
+                }
+            )
         content.append({"text": message})
         user_input: str | list = content
     else:
@@ -532,12 +573,12 @@ async def _call_agent_streaming(
 # Lunch plan helpers
 # ---------------------------------------------------------------------------
 
+
 async def _fetch_lunch_plan_range(
     start: datetime.date, end: datetime.date
 ) -> list[dict]:
     url = (
-        f"{LUNCH_PLAN_BASE_URL}"
-        f"?startDate={start.isoformat()}&endDate={end.isoformat()}"
+        f"{LUNCH_PLAN_BASE_URL}?startDate={start.isoformat()}&endDate={end.isoformat()}"
     )
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers={"Accept": "application/json"})
@@ -581,9 +622,7 @@ async def _trigger_week_plan(
 ) -> None:
     """Ask the agent to propose a meal plan for the coming week and present it."""
 
-    trigger = (
-        "Bitte erstelle einen Vorschlag für das Mittagessen. "
-    )
+    trigger = "Bitte erstelle einen Vorschlag für das Mittagessen. "
     try:
         await _call_agent_streaming(
             user_id,
@@ -592,10 +631,7 @@ async def _trigger_week_plan(
             reply_markup=plan_keyboard(),
         )
         PENDING_LUNCH_PLAN.add(user_id)
-        log.info(
-            "[chat=%d] Lunch plan suggestion sent.",
-            user_id
-        )
+        log.info("[chat=%d] Lunch plan suggestion sent.", user_id)
     except Exception as e:
         log.error("[chat=%d] Failed to send lunch plan suggestion: %s", user_id, e)
 
@@ -695,23 +731,27 @@ async def cmd_inserate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         path_str = str(ad["path"])
         rows = []
         if ad["active"]:
-            rows.append([
-                InlineKeyboardButton(
-                    "🗑 Löschen (Site + lokal)",
-                    callback_data=f"del:{path_str}",
-                ),
-                InlineKeyboardButton(
-                    "⏸ Deaktivieren (nur lokal)",
-                    callback_data=f"deact:{path_str}",
-                ),
-            ])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "🗑 Löschen (Site + lokal)",
+                        callback_data=f"del:{path_str}",
+                    ),
+                    InlineKeyboardButton(
+                        "⏸ Deaktivieren (nur lokal)",
+                        callback_data=f"deact:{path_str}",
+                    ),
+                ]
+            )
         else:
-            rows.append([
-                InlineKeyboardButton(
-                    "▶️ Reaktivieren",
-                    callback_data=f"react:{path_str}",
-                ),
-            ])
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        "▶️ Reaktivieren",
+                        callback_data=f"react:{path_str}",
+                    ),
+                ]
+            )
         await context.bot.send_message(
             chat_id,
             caption,
@@ -760,7 +800,7 @@ async def cmd_queue_status(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None
     """Show current queue status."""
     pending_count = QUEUE_MANAGER.get_pending_count()
     backout_count = QUEUE_MANAGER.get_backout_count()
-    
+
     await update.message.reply_text(
         f"📊 Queue-Status:\n"
         f"⏳ Ausstehend: {pending_count}\n"
@@ -773,11 +813,11 @@ async def cmd_backout_jobs(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None
     """Show backout jobs for this chat."""
     chat_id = update.effective_chat.id
     backout_jobs = QUEUE_MANAGER.get_backout_jobs(chat_id=chat_id)
-    
+
     if not backout_jobs:
         await update.message.reply_text("Keine fehlgeschlagenen Jobs für diesen Chat.")
         return
-    
+
     msg_lines = ["❌ Fehlgeschlagene Jobs:\n"]
     for job in backout_jobs:
         retry_cmd = f"/retry_{job.job_id[:8]}"
@@ -788,7 +828,7 @@ async def cmd_backout_jobs(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None
             f"  Versuche: {job.retry_count}/{job.max_retries}\n"
             f"  Befehl: `{retry_cmd}`\n"
         )
-    
+
     await update.message.reply_text(
         "".join(msg_lines),
         parse_mode=ParseMode.MARKDOWN,
@@ -802,17 +842,17 @@ async def cmd_retry_job(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not match:
         await update.message.reply_text("Befehl: /retry_<job_id>")
         return
-    
+
     job_id_prefix = match.group(1)
     chat_id = update.effective_chat.id
     backout_jobs = QUEUE_MANAGER.get_backout_jobs(chat_id=chat_id)
-    
+
     # Find matching job
     matching = [j for j in backout_jobs if j.job_id.startswith(job_id_prefix)]
     if not matching:
         await update.message.reply_text(f"Kein Job mit ID `{job_id_prefix}` gefunden.")
         return
-    
+
     job = matching[0]
     if QUEUE_MANAGER.retry_backout_job(job.job_id):
         await update.message.reply_text(
@@ -861,9 +901,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-        await context.bot.send_message(
-            chat_id, response, parse_mode=ParseMode.MARKDOWN
-        )
+        await context.bot.send_message(chat_id, response, parse_mode=ParseMode.MARKDOWN)
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -873,7 +911,10 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     photo = msg.photo[-1]
     log.info(
         "[chat=%d] photo received (file_id=%s, %dx%d, album=%s)",
-        chat_id, photo.file_id, photo.width, photo.height,
+        chat_id,
+        photo.file_id,
+        photo.width,
+        photo.height,
         msg.media_group_id or "none",
     )
     file = await context.bot.get_file(photo.file_id)
@@ -890,9 +931,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         entry["photos"].append(img_bytes)
         if entry["task"]:
             entry["task"].cancel()
-        entry["task"] = asyncio.create_task(
-            _process_album_after_delay(key, context)
-        )
+        entry["task"] = asyncio.create_task(_process_album_after_delay(key, context))
         return
 
     # Cancel any in-progress generation for this chat
@@ -928,6 +967,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     def _on_task_done(t: asyncio.Task) -> None:
         if ACTIVE_GENERATION_TASKS.get(chat_id) is t:
             ACTIVE_GENERATION_TASKS.pop(chat_id, None)
+
     task.add_done_callback(_on_task_done)
 
 
@@ -951,7 +991,9 @@ async def _process_photos(
     log.info("[chat=%d] processing %d photo(s) via agent", chat_id, len(photos))
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     try:
-        response = await _call_agent(chat_id, "Erstelle das Inserat-JSON.", photos=photos)
+        response = await _call_agent(
+            chat_id, "Erstelle das Inserat-JSON.", photos=photos
+        )
     except Exception as e:
         log.exception("[chat=%d] agent photo processing failed", chat_id)
         await context.bot.send_message(chat_id, f"Fehler bei der Analyse: {e}")
@@ -980,7 +1022,9 @@ async def _process_photos(
     DRAFTS[chat_id] = d
     log.info(
         "[chat=%d] draft created: title=%r price=%s",
-        chat_id, d.title, d.price_eur,
+        chat_id,
+        d.title,
+        d.price_eur,
     )
     await context.bot.send_message(
         chat_id,
@@ -1006,7 +1050,9 @@ async def handle_publish_job(job_data: dict) -> tuple[bool, str]:
         log.info("[chat=%d] kleinanzeigen-bot succeeded:\n%s", chat_id, output)
         return True, "✅ Anzeige geschaltet!"
     else:
-        log.error("[chat=%d] kleinanzeigen-bot failed (rc=%d):\n%s", chat_id, rc, output)
+        log.error(
+            "[chat=%d] kleinanzeigen-bot failed (rc=%d):\n%s", chat_id, rc, output
+        )
         return False, f"Kleinanzeigen-Bot Fehler (rc={rc})"
 
 
@@ -1037,9 +1083,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.info("[chat=%d] button pressed: %r", chat_id, q.data)
 
     # ── Ad management (del: / deact: / react:) ───────────────────────────
-    for prefix, action in (("del:", "delete"), ("deact:", "deactivate"), ("react:", "reactivate")):
+    for prefix, action in (
+        ("del:", "delete"),
+        ("deact:", "deactivate"),
+        ("react:", "reactivate"),
+    ):
         if q.data.startswith(prefix):
-            ad_file = Path(q.data[len(prefix):])
+            ad_file = Path(q.data[len(prefix) :])
             await q.edit_message_reply_markup(reply_markup=None)
 
             if action == "delete":
@@ -1065,16 +1115,20 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             elif action == "deactivate":
                 _set_ad_inactive(ad_file)
                 await context.bot.send_message(
-                    chat_id, "⏸ Inserat lokal deaktiviert (wird nicht mehr republiziert)."
+                    chat_id,
+                    "⏸ Inserat lokal deaktiviert (wird nicht mehr republiziert).",
                 )
 
             elif action == "reactivate":
                 try:
                     text = ad_file.read_text(encoding="utf-8")
-                    text = re.sub(r"(?m)^active:\s*(true|false)\s*$", "active: true", text)
+                    text = re.sub(
+                        r"(?m)^active:\s*(true|false)\s*$", "active: true", text
+                    )
                     ad_file.write_text(text, encoding="utf-8")
                     await context.bot.send_message(
-                        chat_id, "▶️ Inserat reaktiviert – wird beim nächsten Lauf neu geschaltet."
+                        chat_id,
+                        "▶️ Inserat reaktiviert – wird beim nächsten Lauf neu geschaltet.",
                     )
                 except OSError as e:
                     await context.bot.send_message(chat_id, f"Fehler: {e}")
@@ -1175,12 +1229,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     global QUEUE_MANAGER, BACKGROUND_WORKER
-    
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN not set")
     if not ALLOWED_USER_IDS:
-        raise SystemExit("ALLOWED_USERS not set – set a comma-separated list of Telegram user IDs")
+        raise SystemExit(
+            "ALLOWED_USERS not set – set a comma-separated list of Telegram user IDs"
+        )
     log.info("Access restricted to user IDs: %s", ALLOWED_USER_IDS)
 
     # Initialize queue manager and register its enqueue fn for the tools module
@@ -1195,7 +1251,7 @@ def main() -> None:
     }
 
     app = Application.builder().token(token).build()
-    
+
     # Create job completion callback that uses app.bot
     async def notify_job_completion(
         job_id: str, chat_id: int, success: bool, message: str
@@ -1211,7 +1267,9 @@ def main() -> None:
         except Exception as e:
             log.error(
                 "[job=%s chat=%d] Failed to send completion notification: %s",
-                job_id, chat_id, e,
+                job_id,
+                chat_id,
+                e,
             )
 
     BACKGROUND_WORKER = BackgroundWorker(
@@ -1219,7 +1277,7 @@ def main() -> None:
         job_handlers,
         on_job_completed=notify_job_completion,
     )
-    
+
     # Register post_init to start the background worker
     async def post_init(app: Application) -> None:
         await BACKGROUND_WORKER.start()
@@ -1260,12 +1318,17 @@ def main() -> None:
     app.add_handler(CommandHandler("backout", cmd_backout_jobs, filters=user_filter))
     app.add_handler(CommandHandler("retry", cmd_retry_job, filters=user_filter))
     app.add_handler(MessageHandler(filters.PHOTO & user_filter, on_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, on_text))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & user_filter, on_text)
+    )
     app.add_handler(CallbackQueryHandler(on_button, pattern=None))
 
     # Reject all other users
     async def _unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        log.warning("Unauthorized access attempt by user_id=%s", update.effective_user and update.effective_user.id)
+        log.warning(
+            "Unauthorized access attempt by user_id=%s",
+            update.effective_user and update.effective_user.id,
+        )
         if update.message:
             await update.message.reply_text("⛔ Kein Zugriff.")
 

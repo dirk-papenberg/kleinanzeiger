@@ -32,6 +32,13 @@ jobs:
             echo "ALLOWED_USERS=${ALLOWED_USERS}"
             echo "KLEINANZEIGEN_BOT_CMD=/usr/local/bin/kleinanzeigen"
             echo "KLEINANZEIGEN_BASE_DIR=/docker-volumes/kleinanzeiger/kleinanzeigen-config"
+            # nodriver's Chrome DevTools connect-retry loop (see scripts/patch_nodriver_connect_timeout.py);
+            # increased from the 5x/2s/0.5s upstream defaults since this host's load can make Chrome's
+            # cold start lose that race even though the browser itself works fine.
+            echo "NODRIVER_CONNECT_RETRIES=5"
+            echo "NODRIVER_CONNECT_TIMEOUT=60"
+            echo "NODRIVER_CONNECT_RETRY_DELAY=1"
+            echo "NODRIVER_CONNECT_INITIAL_DELAY=0.25"
           } > .env
 
       - name: Remove existing container
